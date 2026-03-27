@@ -1,35 +1,59 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 
 const corsHeaders = {
-'Access-Control-Allow-Origin': '*',
-'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
 serve(async (req) => {
-if (req.method === 'OPTIONS') {
-return new Response('ok', { headers: corsHeaders })
-}
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
 
-const { messages, system } = await req.json()
+  try {
+    const { messages, system } = await req.json()
 
-const res = await fetch('https://api.anthropic.com/v1/messages', {
-method: 'POST',
-headers: {
-'Content-Type': 'application/json',
-'x-api-key': Deno.env.get('ANTHROPIC_API_KEY') ?? '',
-'anthropic-version': '2023-06-01',
-},
-body: JSON.stringify({
-model: 'claude-sonnet-4-20250514',
-max_tokens: 1000,
-system,
-messages,
-}),
-})
+    const apiKey = Deno.env.get('OPENAI_API_KEY')
 
-const data = await res.json()
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4.1-mini',
+        messages: [
+          {
+            role: 'system',
+            content:
+              system ||
+              'Ти си AI асистент в AccessGuard. Отговаряй на български.',
+          },
+          ...(messages || []),
+        ],
+        temperature: 0.4,
+      }),
+    })
 
-return new Response(JSON.stringify(data), {
-headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-})
+    const data = await response.json()
+
+    const reply =
+      data?.choices?.[0]?.message?.content || 'Няма получен отговор.'
+
+    return new Response(
+      JSON.stringify({ reply }),
+      {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      },
+    )
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: 'Server error' }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      },
+    )
+  }
 })

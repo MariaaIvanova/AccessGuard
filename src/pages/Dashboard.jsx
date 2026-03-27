@@ -104,12 +104,77 @@ export default function Dashboard() {
     loadData()
   }
 
-  function sendChat(text) {
-    if (!text.trim()) return
-    setChatInput('')
-    setChatMsgs(m => [...m, { role: 'user', text: text.trim() }])
-    setTimeout(() => setChatMsgs(m => [...m, { role: 'ai', text: 'AI чатът ще бъде активиран скоро.' }]), 400)
-  }
+async function sendChat(text) {
+  const clean = text.trim()
+  if (!clean) return
+
+  setChatInput('')
+
+  const nextMsgs = [...chatMsgs, { role: 'user', text: clean }]
+  setChatMsgs(nextMsgs)
+
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+
+    const todayLogs = Array.isArray(logs)
+      ? logs.filter((log) => {
+          const createdAt = log?.created_at || log?.timestamp || ''
+          return createdAt.startsWith(today)
+        })
+      : []
+
+    const systemPrompt = `
+Ти си AI асистент в AccessGuard.
+Отговаряй само на български.
+Бъди кратък и точен.
+
+Потребител:
+- Име: ${profile?.first_name || ''} ${profile?.last_name || ''}
+- Роля: ${profile?.role || 'user'}
+
+Врата:
+- Статус: ${door?.status || 'unknown'}
+- Заключена: ${door?.is_locked ? 'Да' : 'Не'}
+
+Логове:
+- Общо: ${logs?.length || 0}
+- Днес: ${todayLogs.length}
+
+ВАЖНО:
+- Не измисляй информация
+- Ако няма данни — кажи
+`
+
+    const messagesForModel = nextMsgs.map((m) => ({
+      role: m.role === 'ai' ? 'assistant' : 'user',
+      content: m.text,
+    }))
+
+    const { data, error } = await supabase.functions.invoke('chat', {
+      body: {
+        system: systemPrompt,
+        messages: messagesForModel,
+      },
+    })
+
+    if (error) {
+      setChatMsgs((prev) => [
+        ...prev,
+        { role: 'ai', text: 'Грешка при AI.' },
+      ])
+      return
+    }
+
+    const reply = data?.reply || 'Няма отговор.'
+
+    setChatMsgs((prev) => [...prev, { role: 'ai', text: reply }])
+  } catch (err) {
+    setChatMsgs((prev) => [
+      ...prev,
+      { role: 'ai', text: 'Грешка при заявката.' },
+    ])
+  }
+}
 
   async function submitRequest() {
     if (!reqMsg.trim()) { setReqError('Моля опишете запитването'); return }

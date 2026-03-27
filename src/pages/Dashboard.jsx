@@ -105,97 +105,169 @@ export default function Dashboard() {
   }
 
   async function sendChat(text) {
-    const clean = text.trim()
-    if (!clean) return
+  const clean = text.trim()
+  if (!clean) return
 
-    setChatInput('')
+  setChatInput('')
 
-    const nextMsgs = [...chatMsgs, { role: 'user', text: clean }]
-    setChatMsgs(nextMsgs)
+  const nextMsgs = [...chatMsgs, { role: 'user', text: clean }]
+  setChatMsgs(nextMsgs)
 
-    try {
-      const today = new Date().toISOString().slice(0, 10)
+  try {
+    const today = new Date()
+    const todayStr = today.toISOString().slice(0, 10)
 
-      const todayLogs = Array.isArray(allLogs)
-        ? allLogs.filter((log) => {
-            const ts = log?.timestamp || log?.created_at || ''
-            return ts.startsWith(today)
-          })
-        : []
+    const safeAllLogs = Array.isArray(allLogs) ? allLogs : []
+    const safeLogs = Array.isArray(logs) ? logs : []
 
-      const recentLogsText = (allLogs || [])
-        .slice(0, 5)
-        .map((log, i) => {
-          const when = log?.timestamp ? formatDate(log.timestamp) : '—'
-          const method = METHOD_LABELS[log?.method] || log?.method || '—'
-          const direction = DIRECTION_LABELS[log?.direction] || log?.direction || '—'
-          const result = log?.result === 'granted' ? 'Разрешен' : log?.result === 'denied' ? 'Отказан' : '—'
-          return `${i + 1}. ${when} | ${direction} | ${method} | ${result}`
-        })
-        .join('\n')
+    const todayLogs = safeAllLogs.filter((log) => {
+      const ts = log?.timestamp || log?.created_at || ''
+      return ts.startsWith(todayStr)
+    })
 
-      const systemPrompt = `
-Ти си AI асистент в AccessGuard.
-Отговаряй само на български.
-Бъди кратък, точен и полезен.
-Не измисляй факти.
-Използвай само подадения контекст.
-Ако нещо липсва в данните, кажи ясно, че няма данни.
+    const deniedToday = todayLogs.filter((log) => log?.result === 'denied').length
+    const grantedToday = todayLogs.filter((log) => log?.result === 'granted').length
 
-КОНТЕКСТ ЗА ПОТРЕБИТЕЛЯ:
+    const methodCountsLocal = safeAllLogs.reduce((acc, log) => {
+      const method = log?.method || 'unknown'
+      acc[method] = (acc[method] || 0) + 1
+      return acc
+    }, {})
+
+    const mostUsedMethodKey =
+      Object.entries(methodCountsLocal).sort((a, b) => b[1] - a[1])[0]?.[0] || null
+    const mostUsedMethod =
+      METHOD_LABELS[mostUsedMethodKey] || mostUsedMethodKey || 'Няма данни'
+
+    const hourCountsLocal = Array(24).fill(0)
+    safeAllLogs.forEach((log) => {
+      const ts = log?.timestamp || log?.created_at
+      if (!ts) return
+      const h = new Date(ts).getHours()
+      if (!Number.isNaN(h)) hourCountsLocal[h]++
+    })
+    const peakHour = hourCountsLocal.indexOf(Math.max(...hourCountsLocal, 0))
+
+    const lateNightLogs = safeAllLogs.filter((log) => {
+      const ts = log?.timestamp || log?.created_at
+      if (!ts) return false
+      const h = new Date(ts).getHours()
+      return h >= 23 || h < 5
+    }).length
+
+    const deniedRecent = safeAllLogs.slice(0, 10).filter((log) => log?.result === 'denied').length
+
+    const suspiciousFlags = []
+    if (deniedToday >= 3) suspiciousFlags.push(`Има ${deniedToday} отказани опита днес.`)
+    if (lateNightLogs > 0) suspiciousFlags.push(`Има ${lateNightLogs} късни влизания/опити между 23:00 и 05:00.`)
+    if (door?.is_locked) suspiciousFlags.push('Вратата е в режим аварийно заключване.')
+    if (deniedRecent >= 3) suspiciousFlags.push(`В последните 10 записа има ${deniedRecent} отказани опита.`)
+
+    const recentLogsText = safeAllLogs
+      .slice(0, 8)
+      .map((log, i) => {
+        const when = log?.timestamp ? formatDate(log.timestamp) : '—'
+        const method = METHOD_LABELS[log?.method] || log?.method || '—'
+        const direction = DIRECTION_LABELS[log?.direction] || log?.direction || '—'
+        const result =
+          log?.result === 'granted'
+            ? 'Разрешен'
+            : log?.result === 'denied'
+            ? 'Отказан'
+            : '—'
+
+        return `${i + 1}. ${when} | ${direction} | ${method} | ${result}`
+      })
+      .join('\n')
+
+    const systemPrompt = `
+Ти си AI security асистент в AccessGuard.
+
+ПРАВИЛА:
+- Отговаряй само на български.
+- Бъди кратък, точен и полезен.
+- Отговаряй като нормален чатбот на свободни въпроси.
+- Използвай само данните от подадения контекст.
+- Не измисляй факти.
+- Ако няма достатъчно данни, кажи ясно, че няма достатъчно данни.
+- Ако потребителят пита за риск или suspicious activity, анализирай denied attempts, late-night activity и emergency lock.
+- Ако потребителят пита "кой последно влезе", отговаряй по последния наличен негов запис.
+- Ако потребителят пита за "история днес", използвай today's logs.
+- Ако потребителят пита за препоръка, дай кратък practical advice.
+
+ПОТРЕБИТЕЛ:
 - Име: ${profile?.first_name || ''} ${profile?.last_name || ''}
 - Имейл: ${profile?.email || user?.email || 'неизвестен'}
 - Роля: ${profile?.role || 'user'}
 
-КОНТЕКСТ ЗА ВРАТАТА:
+ВРАТА:
 - Статус: ${door?.status || 'unknown'}
 - Заключена: ${door?.is_locked ? 'Да' : 'Не'}
 - Последно отваряне: ${door?.last_opened_at ? formatDate(door.last_opened_at) : 'Няма данни'}
 
-КОНТЕКСТ ЗА ЛОГОВЕТЕ:
-- Общо заредени логове: ${allLogs?.length || 0}
+ОБЩА СТАТИСТИКА:
+- Общо заредени логове: ${safeAllLogs.length}
 - Логове днес: ${todayLogs.length}
-- Последно влизане: ${allLogs?.[0]?.timestamp ? formatDate(allLogs[0].timestamp) : 'Няма данни'}
+- Разрешени днес: ${grantedToday}
+- Отказани днес: ${deniedToday}
+- Най-използван метод: ${mostUsedMethod}
+- Пиков час: ${peakHour}:00
+- Късни влизания/опити: ${lateNightLogs}
 
-ПОСЛЕДНИ 5 ЗАПИСА:
+ПОСЛЕДЕН ЗАПИС:
+${
+  safeAllLogs[0]
+    ? `${formatDate(safeAllLogs[0].timestamp)} | ${
+        DIRECTION_LABELS[safeAllLogs[0].direction] || safeAllLogs[0].direction || '—'
+      } | ${METHOD_LABELS[safeAllLogs[0].method] || safeAllLogs[0].method || '—'} | ${
+        safeAllLogs[0].result === 'granted'
+          ? 'Разрешен'
+          : safeAllLogs[0].result === 'denied'
+          ? 'Отказан'
+          : '—'
+      }`
+    : 'Няма данни'
+}
+
+ПОДОЗРИТЕЛНИ СИГНАЛИ:
+${suspiciousFlags.length ? suspiciousFlags.map((x) => `- ${x}`).join('\n') : '- Няма явни подозрителни сигнали в наличните данни.'}
+
+ПОСЛЕДНИ ЗАПИСИ:
 ${recentLogsText || 'Няма записи'}
 
-ВАЖНО:
-- Ако потребителят пита "кой последно влезе", а няма данни за друго лице, кажи, че можеш да видиш само неговите записи.
-- Ако пита за "история днес", използвай броя логове за днес.
-- Ако пита за статуса на вратата, използвай само подадения статус.
+Ако потребителят задава общ въпрос, отговори естествено и полезно.
 `
 
-      const messagesForModel = nextMsgs.map((m) => ({
-        role: m.role === 'ai' ? 'assistant' : 'user',
-        content: m.text,
-      }))
+    const messagesForModel = nextMsgs.map((m) => ({
+      role: m.role === 'ai' ? 'assistant' : 'user',
+      content: m.text,
+    }))
 
-      const { data, error } = await supabase.functions.invoke('chat', {
-        body: {
-          system: systemPrompt,
-          messages: messagesForModel,
-        },
-      })
+    const { data, error } = await supabase.functions.invoke('chat', {
+      body: {
+        system: systemPrompt,
+        messages: messagesForModel,
+      },
+    })
 
-      if (error) {
-        setChatMsgs((prev) => [
-          ...prev,
-          { role: 'ai', text: `Грешка при връзката с AI: ${error.message || 'Неуспешна заявка.'}` },
-        ])
-        return
-      }
-
-      const reply = data?.reply || 'Няма reply от AI услугата.'
-
-      setChatMsgs((prev) => [...prev, { role: 'ai', text: reply }])
-    } catch (err) {
+    if (error) {
       setChatMsgs((prev) => [
         ...prev,
-        { role: 'ai', text: `Грешка при заявката: ${err?.message || 'Неочаквана грешка.'}` },
+        { role: 'ai', text: `Грешка при връзката с AI: ${error.message || 'Неуспешна заявка.'}` },
       ])
+      return
     }
+
+    const reply = data?.reply || 'Няма reply от AI услугата.'
+
+    setChatMsgs((prev) => [...prev, { role: 'ai', text: reply }])
+  } catch (err) {
+    setChatMsgs((prev) => [
+      ...prev,
+      { role: 'ai', text: `Грешка при заявката: ${err?.message || 'Неочаквана грешка.'}` },
+    ])
   }
+}
 
   async function submitRequest() {
     if (!reqMsg.trim()) { setReqError('Моля опишете запитването'); return }

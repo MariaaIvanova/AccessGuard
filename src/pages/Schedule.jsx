@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
+import AppLoader from '../components/AppLoader'
 import { supabase } from '../supabase'
 import { useDialog } from '../context/DialogContext'
 import {
@@ -249,7 +250,7 @@ export default function Schedule() {
   if (loading) {
     return (
       <Layout>
-        <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Зареждане...</div>
+        <AppLoader />
       </Layout>
     )
   }

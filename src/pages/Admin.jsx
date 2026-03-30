@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabase'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
+import AppLoader from '../components/AppLoader'
 import { useDialog } from '../context/DialogContext'
 import {
   REQUEST_LABELS,
@@ -209,7 +210,7 @@ export default function Admin() {
   const responseByRequestId = useMemo(() => getRequestResponseMap(requestLogs), [requestLogs])
 
   if (loading) {
-    return <Layout><div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Зареждане...</div></Layout>
+    return <Layout><AppLoader /></Layout>
   }
 
   return (

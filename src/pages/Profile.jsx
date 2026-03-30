@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../supabase'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
+import AppLoader from '../components/AppLoader'
 import {
   REQUEST_LABELS,
   REQUEST_STATUS_LABELS,
@@ -319,7 +320,7 @@ export default function Profile() {
   const responseByRequestId = useMemo(() => getRequestResponseMap(requestLogs), [requestLogs])
 
   if (loading) {
-    return <Layout><div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Зареждане...</div></Layout>
+    return <Layout><AppLoader /></Layout>
   }
 
   const activeRequests = requests.filter((request) => request.status === 'pending')

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../supabase'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
+import AppLoader from '../components/AppLoader'
 import { AI_NAME, BRAND_LOGO, BRAND_NAME } from '../branding'
 import { useDialog } from '../context/DialogContext'
 import {
@@ -339,7 +340,7 @@ ${recentLogsText || 'Няма записи'}
     URL.revokeObjectURL(url)
   }
 
-  if (loading) return <Layout><div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Зареждане...</div></Layout>
+  if (loading) return <Layout><AppLoader /></Layout>
 
   const lastLog = logs[0]
   const isLocked = door?.is_locked

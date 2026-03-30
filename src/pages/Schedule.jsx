@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { supabase } from '../supabase'
+import { useDialog } from '../context/DialogContext'
 import {
   DAY_OPTIONS,
   formatAccessWindowShort,
@@ -100,6 +101,7 @@ export default function Schedule() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [form, setForm] = useState(getInitialForm)
+  const { showConfirm } = useDialog()
 
   const loadData = useCallback(async () => {
     const {
@@ -217,7 +219,15 @@ export default function Schedule() {
   }
 
   async function deleteSchedule(scheduleId) {
-    if (!window.confirm('Сигурни ли сте, че искате да премахнете този график?')) return
+    const confirmed = await showConfirm({
+      title: 'Премахни график',
+      message: 'Сигурни ли сте, че искате да премахнете този график?',
+      confirmLabel: 'Премахни',
+      cancelLabel: 'Отказ',
+      tone: 'danger',
+    })
+
+    if (!confirmed) return
 
     setDeletingId(scheduleId)
     setError('')

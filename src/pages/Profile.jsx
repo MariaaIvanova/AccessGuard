@@ -1,261 +1,504 @@
-import { useState, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../supabase'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
+import {
+  REQUEST_LABELS,
+  REQUEST_STATUS_LABELS,
+  REQUEST_STATUS_STYLES,
+  getRequestResponseMap,
+} from '../requestUtils'
 
-const inp = { width: '100%', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 12px', fontFamily: "'Inter', sans-serif", fontSize: 13, color: 'var(--text)', outline: 'none', boxSizing: 'border-box' }
-const btnPrimary = { width: '100%', padding: 10, background: 'var(--btn-bg)', border: 'none', borderRadius: 8, color: 'var(--btn-color)', fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 500, cursor: 'pointer' }
+const inp = {
+  width: '100%',
+  background: 'var(--input-bg)',
+  border: '1px solid var(--border)',
+  borderRadius: 8,
+  padding: '9px 12px',
+  fontFamily: "'Inter', sans-serif",
+  fontSize: 13,
+  color: 'var(--text)',
+  outline: 'none',
+  boxSizing: 'border-box',
+}
+
+const btnPrimary = {
+  width: '100%',
+  padding: 10,
+  background: 'var(--btn-bg)',
+  border: 'none',
+  borderRadius: 8,
+  color: 'var(--btn-color)',
+  fontFamily: "'Inter', sans-serif",
+  fontSize: 13,
+  fontWeight: 500,
+  cursor: 'pointer',
+}
 
 function Field({ label, children }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      <label style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</label>
-      {children}
-    </div>
-  )
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <label style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</label>
+      {children}
+    </div>
+  )
+}
+
+function formatDate(ts) {
+  if (!ts) return '—'
+  return new Date(ts).toLocaleDateString('bg-BG', { day: 'numeric', month: 'long', year: 'numeric' }) + ', ' +
+    new Date(ts).toLocaleTimeString('bg-BG', { hour: '2-digit', minute: '2-digit' })
 }
 
 export default function Profile() {
-  const [profile, setProfile] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [uploadingAvatar, setUploadingAvatar] = useState(false)
-  const [success, setSuccess] = useState('')
-  const [error, setError] = useState('')
-  const [firstName, setFirstName] = useState('')
-  const [lastName, setLastName] = useState('')
-  const [oldPin, setOldPin] = useState('')
-  const [newPin, setNewPin] = useState('')
-  const [pinSuccess, setPinSuccess] = useState('')
-  const [pinError, setPinError] = useState('')
-  const [pinLoading, setPinLoading] = useState(false)
-  const [reqType, setReqType] = useState('fingerprint')
-  const [reqMsg, setReqMsg] = useState('')
-  const [reqSuccess, setReqSuccess] = useState(false)
-  const [reqLoading, setReqLoading] = useState(false)
-  const [requests, setRequests] = useState([])
-  const fileRef = useRef()
-  const navigate = useNavigate()
+  const [profile, setProfile] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const [success, setSuccess] = useState('')
+  const [error, setError] = useState('')
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [oldPin, setOldPin] = useState('')
+  const [newPin, setNewPin] = useState('')
+  const [pinSuccess, setPinSuccess] = useState('')
+  const [pinError, setPinError] = useState('')
+  const [pinLoading, setPinLoading] = useState(false)
+  const [emailInput, setEmailInput] = useState('')
+  const [emailSuccess, setEmailSuccess] = useState('')
+  const [emailError, setEmailError] = useState('')
+  const [emailLoading, setEmailLoading] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordSuccess, setPasswordSuccess] = useState('')
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordLoading, setPasswordLoading] = useState(false)
+  const [requestMessage, setRequestMessage] = useState('')
+  const [requestError, setRequestError] = useState('')
+  const [requestSuccess, setRequestSuccess] = useState(false)
+  const [requestLoading, setRequestLoading] = useState(false)
+  const [requests, setRequests] = useState([])
+  const [requestLogs, setRequestLogs] = useState([])
+  const fileRef = useRef()
+  const navigate = useNavigate()
 
-  useEffect(() => { loadProfile() }, [])
+  const loadProfile = useCallback(async () => {
+    setLoading(true)
 
-  async function loadProfile() {
-    setLoading(true)
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) { navigate('/login'); return }
-    const { data: prof } = await supabase.from('users').select('*').eq('id', user.id).single()
-    setProfile(prof)
-    setFirstName(prof?.first_name || '')
-    setLastName(prof?.last_name || '')
-    const { data: reqs } = await supabase.from('requests').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
-    setRequests(reqs || [])
-    setLoading(false)
-  }
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
 
-  async function saveProfile() {
-    setSaving(true); setSuccess(''); setError('')
-    const { error } = await supabase.from('users').update({ first_name: firstName, last_name: lastName }).eq('id', profile.id)
-    if (error) setError('Грешка при запазване')
-    else setSuccess('Профилът е обновен успешно')
-    setSaving(false)
-  }
+    if (!user) {
+      navigate('/login')
+      return
+    }
 
-  async function changePin() {
-    setPinError(''); setPinSuccess('')
-    if (!oldPin || !newPin) { setPinError('Моля попълнете и двете полета'); return }
-    if (oldPin !== profile?.pin_hash) { setPinError('Старият ПИН е грешен'); return }
-    if (newPin.length !== 4 || isNaN(newPin)) { setPinError('Новият ПИН трябва да е 4 цифри'); return }
-    if (oldPin === newPin) { setPinError('Новият ПИН трябва да е различен'); return }
-    setPinLoading(true)
-    const { error } = await supabase.from('users').update({ pin_hash: newPin }).eq('id', profile.id)
-    if (error) setPinError('Грешка при промяна')
-    else { setPinSuccess('ПИН кодът е сменен успешно'); setOldPin(''); setNewPin(''); setProfile(p => ({ ...p, pin_hash: newPin })) }
-    setPinLoading(false)
-  }
+    const [profileResult, requestsResult, requestLogsResult] = await Promise.all([
+      supabase.from('users').select('*').eq('id', user.id).single(),
+      supabase.from('requests').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+      supabase.from('audit_logs')
+        .select('*, admin:users!audit_logs_admin_id_fkey(first_name, last_name)')
+        .eq('target_user_id', user.id)
+        .in('action', ['request_approved', 'request_rejected'])
+        .order('timestamp', { ascending: false })
+        .limit(100),
+    ])
 
-  async function uploadAvatar(e) {
-    const file = e.target.files[0]
-    if (!file) return
-    setUploadingAvatar(true); setError(''); setSuccess('')
-    const ext = file.name.split('.').pop()
-    const { error: uploadError } = await supabase.storage.from('avatars').upload(`${profile.id}.${ext}`, file, { upsert: true })
-    if (uploadError) { setError('Грешка при качване'); setUploadingAvatar(false); return }
-    const { data } = supabase.storage.from('avatars').getPublicUrl(`${profile.id}.${ext}`)
-    await supabase.from('users').update({ avatar_url: data.publicUrl }).eq('id', profile.id)
-    setProfile(p => ({ ...p, avatar_url: data.publicUrl }))
-    setUploadingAvatar(false); setSuccess('Снимката е обновена')
-  }
+    const nextProfile = profileResult.data
+    setProfile(nextProfile)
+    setFirstName(nextProfile?.first_name || '')
+    setLastName(nextProfile?.last_name || '')
+    setEmailInput(nextProfile?.email || '')
+    setRequests(requestsResult.data || [])
+    setRequestLogs(requestLogsResult.data || [])
+    setLoading(false)
+  }, [navigate])
 
-  async function submitRequest() {
-    if (!reqMsg.trim()) return
-    setReqLoading(true); setReqSuccess(false)
-    const { error } = await supabase.from('requests').insert({ user_id: profile.id, type: reqType, message: reqMsg, status: 'pending' })
-    if (!error) { setReqSuccess(true); setReqMsg(''); loadProfile() }
-    setReqLoading(false)
-  }
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadProfile()
+    }, 0)
 
-  function formatDate(ts) {
-    if (!ts) return '—'
-    return new Date(ts).toLocaleDateString('bg-BG', { day: 'numeric', month: 'long', year: 'numeric' }) + ', ' +
-      new Date(ts).toLocaleTimeString('bg-BG', { hour: '2-digit', minute: '2-digit' })
-  }
+    return () => window.clearTimeout(timeoutId)
+  }, [loadProfile])
 
-  const REQUEST_LABELS = { pin: 'ПИН код', fingerprint: 'Пръстов отпечатък', nfc: 'NFC карта', other: 'Друго' }
-  const STATUS_STYLES = {
-    pending: { background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' },
-    approved: { background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0' },
-    rejected: { background: '#fef2f2', color: '#ef4444', border: '1px solid #fecaca' },
-  }
-  const STATUS_LABELS = { pending: 'Изчаква', approved: 'Одобрено', rejected: 'Отказано' }
+  async function saveProfile() {
+    setSaving(true)
+    setSuccess('')
+    setError('')
 
-  if (loading) return <Layout><div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Зареждане...</div></Layout>
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ first_name: firstName, last_name: lastName })
+      .eq('id', profile.id)
 
-  const activeReqs = requests.filter(r => r.status === 'pending')
-  const pastReqs = requests.filter(r => r.status !== 'pending')
+    if (updateError) setError('Грешка при запазване')
+    else setSuccess('Профилът е обновен успешно')
 
-  return (
-    <Layout>
-      <main style={{ padding: '28px 32px 40px', background: 'var(--bg)', minHeight: 'calc(100vh - 56px)' }}>
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: -0.5, color: 'var(--text)', marginBottom: 3 }}>Моят профил</div>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Управлявайте вашата информация и методи за достъп</div>
-        </div>
+    setSaving(false)
+  }
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          {/* LEFT */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+  async function changePin() {
+    setPinError('')
+    setPinSuccess('')
 
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 16 }}>Профилна снимка</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                <div style={{ width: 72, height: 72, borderRadius: '50%', background: 'var(--input-bg)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' }}>
-                  {profile?.avatar_url
-                    ? <img src={profile.avatar_url} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
-                    : <span style={{ fontSize: 22, fontWeight: 600, color: 'var(--text-muted)' }}>{profile?.first_name?.[0]}{profile?.last_name?.[0]}</span>
-                  }
-                </div>
-                <div>
-                  <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={uploadAvatar} />
-                  <button style={{ padding: '8px 14px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: 'pointer', color: 'var(--text)' }} onClick={() => fileRef.current.click()} disabled={uploadingAvatar}>
-                    {uploadingAvatar ? 'Качване...' : 'Смени снимка'}
-                  </button>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>JPG, PNG до 5MB</div>
-                </div>
-              </div>
-            </div>
+    if (!oldPin || !newPin) {
+      setPinError('Моля попълнете и двете полета')
+      return
+    }
 
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 16 }}>Лична информация</div>
-              {success && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>{success}</div>}
-              {error && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{error}</div>}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <Field label="Име"><input style={inp} value={firstName} onChange={e => setFirstName(e.target.value)} /></Field>
-                  <Field label="Фамилия"><input style={inp} value={lastName} onChange={e => setLastName(e.target.value)} /></Field>
-                </div>
-                <Field label="Имейл"><input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.email || ''} disabled /></Field>
-                <Field label="Роля"><input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.role === 'admin' ? 'Администратор' : 'Потребител'} disabled /></Field>
-                <Field label="Статус"><input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.status === 'active' ? 'Активен' : 'Изчаква одобрение'} disabled /></Field>
-                <button style={btnPrimary} onClick={saveProfile} disabled={saving}>{saving ? 'Запазване...' : 'Запази промените'}</button>
-              </div>
-            </div>
+    if (oldPin !== profile?.pin_hash) {
+      setPinError('Старият ПИН е грешен')
+      return
+    }
 
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Смяна на ПИН код</div>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>Директна смяна без одобрение от администратор</div>
-              {pinSuccess && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>{pinSuccess}</div>}
-              {pinError && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{pinError}</div>}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-                <Field label="Стар ПИН"><input style={inp} type="password" placeholder="Стар ПИН" maxLength={4} value={oldPin} onChange={e => setOldPin(e.target.value.replace(/\D/g, ''))} /></Field>
-                <Field label="Нов ПИН"><input style={inp} type="password" placeholder="Нов 4-цифрен ПИН" maxLength={4} value={newPin} onChange={e => setNewPin(e.target.value.replace(/\D/g, ''))} /></Field>
-                <button style={btnPrimary} onClick={changePin} disabled={pinLoading}>{pinLoading ? 'Промяна...' : 'Смени ПИН'}</button>
-              </div>
-            </div>
-          </div>
+    if (newPin.length !== 4 || Number.isNaN(Number(newPin))) {
+      setPinError('Новият ПИН трябва да е 4 цифри')
+      return
+    }
 
-          {/* RIGHT */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    if (oldPin === newPin) {
+      setPinError('Новият ПИН трябва да е различен')
+      return
+    }
 
-            {/* Single inquiry panel */}
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Подай запитване</div>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
-                Изпратете запитване към администратора за промяна на метод за достъп или друг въпрос
-              </div>
-              {reqSuccess && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>Запитването е изпратено! Очаквайте одобрение.</div>}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <Field label="Тип запитване">
-                  <select style={inp} value={reqType} onChange={e => setReqType(e.target.value)}>
-                    <option value="fingerprint">Пръстов отпечатък — регистриране/смяна</option>
-                    <option value="nfc">NFC карта — регистриране/смяна</option>
-                    <option value="pin">ПИН код — нулиране (забравен)</option>
-                    <option value="other">Друго запитване</option>
-                  </select>
-                </Field>
+    setPinLoading(true)
 
-                {(reqType === 'fingerprint' || reqType === 'nfc') && (
-                  <div style={{ padding: '10px 12px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                    {reqType === 'fingerprint' ? 'Администраторът ще ви помоли да се явите физически за регистриране' : 'Администраторът ще регистрира нова или съществуваща NFC карта'}
-                  </div>
-                )}
+    const { error: updateError } = await supabase.from('users').update({ pin_hash: newPin }).eq('id', profile.id)
 
-                <Field label="Описание">
-                  <textarea
-                    style={{ ...inp, minHeight: 90, resize: 'vertical', paddingTop: 10, lineHeight: 1.5 }}
-                    placeholder={
-                      reqType === 'fingerprint' ? 'Напр: Искам да регистрирам нов пръстов отпечатък...' :
-                      reqType === 'nfc' ? 'Напр: Изгубих картата си, нуждая се от нова...' :
-                      reqType === 'pin' ? 'Напр: Забравих ПИН кода си...' :
-                      'Опишете вашия въпрос или проблем...'
-                    }
-                    value={reqMsg}
-                    onChange={e => setReqMsg(e.target.value)}
-                  />
-                </Field>
-                <button style={{ ...btnPrimary, opacity: !reqMsg.trim() ? 0.5 : 1 }} onClick={submitRequest} disabled={reqLoading || !reqMsg.trim()}>
-                  {reqLoading ? 'Изпращане...' : 'Изпрати запитване'}
-                </button>
-              </div>
-            </div>
+    if (updateError) {
+      setPinError('Грешка при промяна')
+    } else {
+      setPinSuccess('ПИН кодът е сменен успешно')
+      setOldPin('')
+      setNewPin('')
+      setProfile((current) => ({ ...current, pin_hash: newPin }))
+    }
 
-            {activeReqs.length > 0 && (
-              <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 14 }}>Активни запитвания</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {activeReqs.map(r => (
-                    <div key={r.id} style={{ padding: '12px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, color: '#1a1a1a' }}>{REQUEST_LABELS[r.type] || r.type}</div>
-                        <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 8px', borderRadius: 20, background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' }}>Изчаква</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: '#888' }}>{r.message}</div>
-                      <div style={{ fontSize: 11, color: '#b0b0a8', marginTop: 4 }}>{formatDate(r.created_at)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+    setPinLoading(false)
+  }
 
-            {pastReqs.length > 0 && (
-              <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 14 }}>История на запитванията</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {pastReqs.map(r => (
-                    <div key={r.id} style={{ padding: '12px 14px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{REQUEST_LABELS[r.type] || r.type}</div>
-                        <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 8px', borderRadius: 20, ...STATUS_STYLES[r.status] }}>{STATUS_LABELS[r.status]}</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{r.message}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4 }}>{formatDate(r.created_at)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </main>
-    </Layout>
-  )
+  async function changeEmail() {
+    const normalizedEmail = emailInput.trim().toLowerCase()
+
+    setEmailError('')
+    setEmailSuccess('')
+
+    if (!normalizedEmail) {
+      setEmailError('Въведете нов имейл.')
+      return
+    }
+
+    if (!normalizedEmail.includes('@') || !normalizedEmail.includes('.')) {
+      setEmailError('Въведете валиден имейл адрес.')
+      return
+    }
+
+    if (normalizedEmail === (profile?.email || '').toLowerCase()) {
+      setEmailError('Новият имейл трябва да е различен.')
+      return
+    }
+
+    setEmailLoading(true)
+
+    const { error: authError } = await supabase.auth.updateUser({ email: normalizedEmail })
+
+    if (authError) {
+      setEmailError('Имейлът не можа да бъде променен.')
+      setEmailLoading(false)
+      return
+    }
+
+    const { data: updatedProfile, error: profileError } = await supabase
+      .from('users')
+      .update({ email: normalizedEmail })
+      .eq('id', profile.id)
+      .select('*')
+      .single()
+
+    if (profileError) {
+      setEmailError('Имейлът в профила не можа да бъде обновен.')
+      setEmailLoading(false)
+      return
+    }
+
+    setProfile(updatedProfile)
+    setEmailInput(updatedProfile.email || normalizedEmail)
+    setEmailSuccess('Имейлът е обновен. Ако проектът изисква потвърждение, проверете новия си имейл адрес.')
+    setEmailLoading(false)
+  }
+
+  async function changePassword() {
+    setPasswordError('')
+    setPasswordSuccess('')
+
+    if (!newPassword || !confirmPassword) {
+      setPasswordError('Попълнете и двете полета.')
+      return
+    }
+
+    if (newPassword.length < 6) {
+      setPasswordError('Новата парола трябва да е поне 6 символа.')
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordError('Паролите не съвпадат.')
+      return
+    }
+
+    setPasswordLoading(true)
+
+    const { error: authError } = await supabase.auth.updateUser({ password: newPassword })
+
+    if (authError) {
+      setPasswordError('Паролата не можа да бъде променена.')
+    } else {
+      setPasswordSuccess('Паролата е променена успешно.')
+      setNewPassword('')
+      setConfirmPassword('')
+    }
+
+    setPasswordLoading(false)
+  }
+
+  async function uploadAvatar(event) {
+    const file = event.target.files[0]
+    if (!file) return
+
+    setUploadingAvatar(true)
+    setError('')
+    setSuccess('')
+
+    const ext = file.name.split('.').pop()
+    const path = `${profile.id}.${ext}`
+    const { error: uploadError } = await supabase.storage.from('avatars').upload(path, file, { upsert: true })
+
+    if (uploadError) {
+      setError('Грешка при качване')
+      setUploadingAvatar(false)
+      return
+    }
+
+    const { data } = supabase.storage.from('avatars').getPublicUrl(path)
+    await supabase.from('users').update({ avatar_url: data.publicUrl }).eq('id', profile.id)
+    setProfile((current) => ({ ...current, avatar_url: data.publicUrl }))
+    setUploadingAvatar(false)
+    setSuccess('Снимката е обновена')
+  }
+
+  async function submitRequest() {
+    if (!requestMessage.trim()) {
+      setRequestError('Опишете запитването си.')
+      return
+    }
+
+    setRequestLoading(true)
+    setRequestSuccess(false)
+    setRequestError('')
+
+    const { error: insertError } = await supabase.from('requests').insert({
+      user_id: profile.id,
+      type: 'other',
+      message: requestMessage.trim(),
+      status: 'pending',
+    })
+
+    if (insertError) {
+      setRequestError('Запитването не можа да бъде изпратено.')
+    } else {
+      setRequestSuccess(true)
+      setRequestMessage('')
+      await loadProfile()
+    }
+
+    setRequestLoading(false)
+  }
+
+  const responseByRequestId = useMemo(() => getRequestResponseMap(requestLogs), [requestLogs])
+
+  if (loading) {
+    return <Layout><div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Зареждане...</div></Layout>
+  }
+
+  const activeRequests = requests.filter((request) => request.status === 'pending')
+  const answeredRequests = requests.filter((request) => request.status !== 'pending')
+
+  return (
+    <Layout>
+      <main style={{ padding: '28px 32px 40px', background: 'var(--bg)', minHeight: 'calc(100vh - 56px)' }}>
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: -0.5, color: 'var(--text)', marginBottom: 3 }}>Моят профил</div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Управлявайте вашата информация, ПИН кода и запитванията към администратора</div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 16 }}>Профилна снимка</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                <div style={{ width: 72, height: 72, borderRadius: '50%', background: 'var(--input-bg)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' }}>
+                  {profile?.avatar_url ? (
+                    <img src={profile.avatar_url} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
+                  ) : (
+                    <span style={{ fontSize: 22, fontWeight: 600, color: 'var(--text-muted)' }}>{profile?.first_name?.[0]}{profile?.last_name?.[0]}</span>
+                  )}
+                </div>
+                <div>
+                  <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={uploadAvatar} />
+                  <button style={{ padding: '8px 14px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: 'pointer', color: 'var(--text)' }} onClick={() => fileRef.current.click()} disabled={uploadingAvatar}>
+                    {uploadingAvatar ? 'Качване...' : 'Смени снимка'}
+                  </button>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>JPG, PNG до 5MB</div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 16 }}>Лична информация</div>
+              {success && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>{success}</div>}
+              {error && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{error}</div>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <Field label="Име"><input style={inp} value={firstName} onChange={(event) => setFirstName(event.target.value)} /></Field>
+                  <Field label="Фамилия"><input style={inp} value={lastName} onChange={(event) => setLastName(event.target.value)} /></Field>
+                </div>
+                <Field label="Имейл"><input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.email || ''} disabled /></Field>
+                <Field label="Роля"><input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.role === 'admin' ? 'Администратор' : 'Потребител'} disabled /></Field>
+                <Field label="Статус"><input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.status === 'active' ? 'Активен' : 'Изчаква одобрение'} disabled /></Field>
+                <button style={btnPrimary} onClick={saveProfile} disabled={saving}>{saving ? 'Запазване...' : 'Запази промените'}</button>
+              </div>
+            </div>
+
+            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Смяна на ПИН код</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>Директна смяна без одобрение от администратор</div>
+              {pinSuccess && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>{pinSuccess}</div>}
+              {pinError && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{pinError}</div>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+                <Field label="Стар ПИН"><input style={inp} type="password" placeholder="Стар ПИН" maxLength={4} value={oldPin} onChange={(event) => setOldPin(event.target.value.replace(/\D/g, ''))} /></Field>
+                <Field label="Нов ПИН"><input style={inp} type="password" placeholder="Нов 4-цифрен ПИН" maxLength={4} value={newPin} onChange={(event) => setNewPin(event.target.value.replace(/\D/g, ''))} /></Field>
+                <button style={btnPrimary} onClick={changePin} disabled={pinLoading}>{pinLoading ? 'Промяна...' : 'Смени ПИН'}</button>
+              </div>
+            </div>
+
+            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Смяна на имейл</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>Обновете имейла за вход в системата.</div>
+              {emailSuccess && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>{emailSuccess}</div>}
+              {emailError && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{emailError}</div>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+                <Field label="Текущ имейл">
+                  <input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.email || ''} disabled />
+                </Field>
+                <Field label="Нов имейл">
+                  <input style={inp} type="email" placeholder="new@mail.com" value={emailInput} onChange={(event) => setEmailInput(event.target.value)} />
+                </Field>
+                <button style={btnPrimary} onClick={changeEmail} disabled={emailLoading}>{emailLoading ? 'Промяна...' : 'Смени имейла'}</button>
+              </div>
+            </div>
+
+            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Смяна на парола</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>Задайте нова парола за вход в профила.</div>
+              {passwordSuccess && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>{passwordSuccess}</div>}
+              {passwordError && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{passwordError}</div>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+                <Field label="Нова парола">
+                  <input style={inp} type="password" placeholder="Поне 6 символа" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+                </Field>
+                <Field label="Повтори паролата">
+                  <input style={inp} type="password" placeholder="Повторете новата парола" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+                </Field>
+                <button style={btnPrimary} onClick={changePassword} disabled={passwordLoading}>{passwordLoading ? 'Промяна...' : 'Смени паролата'}</button>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Запитване към администратор</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
+                Изпратете въпрос или молба. Администраторът ще приеме или откаже запитването и ще ви върне писмен отговор.
+              </div>
+              {requestSuccess && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>Запитването е изпратено. Ще получите отговор тук.</div>}
+              {requestError && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{requestError}</div>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <Field label="Статус">
+                  <input value="Ще бъде изпратено до администратор" disabled style={{ ...inp, color: 'var(--text-muted)' }} />
+                </Field>
+
+                <Field label="Описание">
+                  <textarea
+                    style={{ ...inp, minHeight: 96, resize: 'vertical', paddingTop: 10, lineHeight: 1.5 }}
+                    placeholder="Опишете какво ви трябва и как администраторът може да помогне."
+                    value={requestMessage}
+                    onChange={(event) => setRequestMessage(event.target.value)}
+                  />
+                </Field>
+
+                <button style={{ ...btnPrimary, opacity: !requestMessage.trim() ? 0.5 : 1 }} onClick={submitRequest} disabled={requestLoading || !requestMessage.trim()}>
+                  {requestLoading ? 'Изпращане...' : 'Изпрати запитване'}
+                </button>
+              </div>
+            </div>
+
+            {activeRequests.length > 0 && (
+              <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 14 }}>Чакащи запитвания</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {activeRequests.map((request) => (
+                    <div key={request.id} style={{ padding: '12px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: '#1a1a1a' }}>{REQUEST_LABELS[request.type] || request.type}</div>
+                        <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 8px', borderRadius: 20, ...REQUEST_STATUS_STYLES.pending }}>{REQUEST_STATUS_LABELS.pending}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: '#888', lineHeight: 1.5 }}>{request.message}</div>
+                      <div style={{ fontSize: 11, color: '#b0b0a8', marginTop: 4 }}>{formatDate(request.created_at)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {answeredRequests.length > 0 && (
+              <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 14 }}>Получени отговори</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {answeredRequests.map((request) => {
+                    const responseEntry = responseByRequestId[request.id]
+
+                    return (
+                      <div key={request.id} style={{ padding: '12px 14px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{REQUEST_LABELS[request.type] || request.type}</div>
+                          <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 8px', borderRadius: 20, ...REQUEST_STATUS_STYLES[request.status] }}>{REQUEST_STATUS_LABELS[request.status] || request.status}</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 8 }}>{request.message}</div>
+
+                        <div style={{ padding: '10px 12px', background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>Отговор от администратор</div>
+                          <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>
+                            {responseEntry?.response || 'Все още няма добавен писмен отговор.'}
+                          </div>
+                          {responseEntry?.timestamp && (
+                            <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 6 }}>
+                              {responseEntry.adminName ? `${responseEntry.adminName} · ` : ''}{formatDate(responseEntry.timestamp)}
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 6 }}>{formatDate(request.created_at)}</div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </main>
+    </Layout>
+  )
 }

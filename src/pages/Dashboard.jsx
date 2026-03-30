@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../supabase'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { AI_NAME, BRAND_LOGO, BRAND_NAME } from '../branding'
+import { useDialog } from '../context/DialogContext'
 import {
   formatAccessWindowShort,
   getCurrentScheduleWindow,
@@ -41,19 +42,12 @@ export default function Dashboard() {
   const [pinError, setPinError] = useState('')
   const [chatMsgs, setChatMsgs] = useState([{ role: 'ai', text: `Здравейте! Аз съм ${AI_NAME}. Задайте ми въпрос за вашите влизания или статуса на вратата.` }])
   const [chatInput, setChatInput] = useState('')
-  const [reqMsg, setReqMsg] = useState('')
-  const [reqError, setReqError] = useState('')
-  const [reqSuccess, setReqSuccess] = useState(false)
-  const [reqLoading, setReqLoading] = useState(false)
   const [accessSchedules, setAccessSchedules] = useState([])
-  const [scheduleSystemEnabled, setScheduleSystemEnabled] = useState(true)
   const chatEndRef = useRef(null)
   const navigate = useNavigate()
+  const { showAlert, showConfirm } = useDialog()
 
-  useEffect(() => { loadData() }, [])
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMsgs])
-
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true)
     const { data: { user: u } } = await supabase.auth.getUser()
     if (!u) { navigate('/login'); return }
@@ -61,21 +55,15 @@ export default function Dashboard() {
     const { data: prof } = await supabase.from('users').select('*').eq('id', u.id).single()
     setProfile(prof)
     if (prof?.role !== 'admin') {
-      const { data: scheduleData, error: scheduleError } = await supabase
+      const { data: scheduleData } = await supabase
         .from('schedules')
         .select('*')
         .eq('user_id', u.id)
+        .eq('is_active', true)
         .limit(50)
 
-      if (scheduleError) {
-        setScheduleSystemEnabled(false)
-        setAccessSchedules([])
-      } else {
-        setScheduleSystemEnabled(true)
-        setAccessSchedules(scheduleData || [])
-      }
+      setAccessSchedules(scheduleData || [])
     } else {
-      setScheduleSystemEnabled(true)
       setAccessSchedules([])
     }
     const { data: doorData } = await supabase.from('doors').select('*').limit(1).single()
@@ -88,7 +76,10 @@ export default function Dashboard() {
     const { count } = await supabase.from('access_logs').select('*', { count: 'exact', head: true }).eq('user_id', u.id).gte('timestamp', today.toISOString())
     setTodayCount(count || 0)
     setLoading(false)
-  }
+  }, [navigate])
+
+  useEffect(() => { loadData() }, [loadData])
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMsgs])
 
   const methodCounts = allLogs.reduce((acc, l) => { acc[l.method] = (acc[l.method] || 0) + 1; return acc }, {})
   const hourCounts = Array(24).fill(0)
@@ -106,7 +97,7 @@ export default function Dashboard() {
       .filter((entry) => entry.window)
       .sort((left, right) => left.window.start.getTime() - right.window.start.getTime())[0] || null
   const upcomingAccessWindow = upcomingAccessEntry?.window || null
-  const canOpenDoor = isAdmin || !scheduleSystemEnabled || Boolean(activeAccessWindow)
+  const canOpenDoor = isAdmin || Boolean(activeAccessWindow)
 
   function addPin(d) {
     if (pin.length >= 4) return
@@ -119,7 +110,7 @@ export default function Dashboard() {
 
   async function submitPin(p = pin) {
     if (p.length < 4) return
-    if (!isAdmin && scheduleSystemEnabled && !activeAccessWindow) {
+    if (!isAdmin && !activeAccessWindow) {
       setPinError(
         upcomingAccessWindow
           ? `Нямате активен график. Следващият прозорец е ${formatAccessWindowShort(upcomingAccessWindow.start, upcomingAccessWindow.end)}.`
@@ -133,7 +124,12 @@ export default function Dashboard() {
     await supabase.from('access_logs').insert({ user_id: user.id, door_id: door?.id, method: 'remote', direction: 'in', result: 'granted' })
     await supabase.from('doors').update({ status: 'open', last_opened_at: new Date() }).eq('id', door?.id)
     setShowPin(false); clearPin(); loadData()
-    alert('Вратата е отворена успешно!')
+    await showAlert({
+      title: 'Успешно действие',
+      message: 'Вратата е отворена успешно.',
+      confirmLabel: 'Разбрах',
+      tone: 'success',
+    })
   }
 
   async function closeDoor() {
@@ -145,7 +141,17 @@ export default function Dashboard() {
 
   async function emergencyLock() {
     const newLocked = !door?.is_locked
-    if (newLocked && !window.confirm('Сигурни ли сте? Аварийното заключване ще блокира ВСИЧКИ влизания незабавно. Никой няма да може да отвори вратата докато не деактивирате заключването.')) return
+    if (newLocked) {
+      const confirmed = await showConfirm({
+        title: 'Аварийно заключване',
+        message: 'Сигурни ли сте? Аварийното заключване ще блокира ВСИЧКИ влизания незабавно. Никой няма да може да отвори вратата, докато не деактивирате заключването.',
+        confirmLabel: 'Активирай',
+        cancelLabel: 'Отказ',
+        tone: 'danger',
+      })
+
+      if (!confirmed) return
+    }
     await supabase.from('doors').update({ is_locked: newLocked, status: 'closed' }).eq('id', door?.id)
     await supabase.from('audit_logs').insert({ admin_id: user.id, action: newLocked ? 'emergency_lock' : 'emergency_unlock', details: { door_id: door?.id, timestamp: new Date().toISOString() } })
     loadData()
@@ -315,15 +321,6 @@ ${recentLogsText || 'Няма записи'}
   }
 }
 
-  async function submitRequest() {
-    if (!reqMsg.trim()) { setReqError('Моля опишете запитването'); return }
-    setReqLoading(true); setReqError(''); setReqSuccess(false)
-    const { error } = await supabase.from('requests').insert({ user_id: user.id, type: 'other', message: reqMsg, status: 'pending' })
-    if (error) setReqError('Грешка при изпращане')
-    else { setReqSuccess(true); setReqMsg('') }
-    setReqLoading(false)
-  }
-
   function downloadReport() {
     const rows = [
       [`Седмичен отчет — ${BRAND_NAME}`],
@@ -378,7 +375,7 @@ ${recentLogsText || 'Няма записи'}
             </div>
           )}
 
-          {!isAdmin && scheduleSystemEnabled && (
+          {!isAdmin && (
             <div style={{ background: currentScheduleNotice.background, border: currentScheduleNotice.border, borderRadius: 10, padding: '12px 16px', marginBottom: 20, display: 'flex', alignItems: 'flex-start', gap: 12 }}>
               <div style={{ width: 32, height: 32, background: currentScheduleNotice.iconBg, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                 {activeAccessSchedule ? (
@@ -560,23 +557,18 @@ ${recentLogsText || 'Няма записи'}
 
           <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
             <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Изпрати запитване към администратор</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 3 }}>За промяна на метод на достъп или друг въпрос, отидете в <a href="#" onClick={e => { e.preventDefault(); navigate('/profile') }} style={{ color: '#3b82f6', textDecoration: 'none' }}>Профил → Запитвания</a></div>
-            </div>
-            <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {reqSuccess && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8 }}>Запитването е изпратено успешно!</div>}
-              {reqError && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8 }}>{reqError}</div>}
-              <div style={{ display: 'flex', gap: 10 }}>
-                <textarea
-                  style={{ flex: 1, background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 12px', fontFamily: "'Inter', sans-serif", fontSize: 13, color: 'var(--text)', outline: 'none', resize: 'none', minHeight: 60, lineHeight: 1.5 }}
-                  placeholder="Опишете вашия въпрос или проблем..."
-                  value={reqMsg}
-                  onChange={e => setReqMsg(e.target.value)}
-                />
-                <button onClick={submitRequest} disabled={reqLoading} style={{ padding: '0 18px', background: 'var(--btn-bg)', border: 'none', borderRadius: 8, color: 'var(--btn-color)', fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap', alignSelf: 'flex-end', height: 40 }}>
-                  {reqLoading ? 'Изпращане...' : 'Изпрати'}
-                </button>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Запитвания към администратор</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 3 }}>
+                Изпращайте запитвания и виждайте отговорите на администратора от профила си.
               </div>
+            </div>
+            <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                Там можете да изпратите ново запитване, а след решение ще видите дали е прието или отказано, заедно с писмения отговор.
+              </div>
+              <button onClick={() => navigate('/profile')} style={{ padding: '8px 14px', background: 'var(--btn-bg)', border: 'none', borderRadius: 8, color: 'var(--btn-color)', fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Отвори запитванията
+              </button>
             </div>
           </div>
         </main>

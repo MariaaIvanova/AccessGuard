@@ -1,261 +1,471 @@
-import { useState, useEffect, useRef } from 'react'
-import { supabase } from '../supabase'
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
+import { supabase } from '../supabase'
+import {
+  DAY_OPTIONS,
+  formatAccessWindowShort,
+  formatCountdown,
+  formatScheduleRule,
+  getCurrentScheduleWindow,
+  getDefaultScheduleDays,
+  getNextScheduleWindow,
+  getScheduleState,
+  normalizeScheduleDays,
+  overlapsSchedule,
+} from '../accessSchedule'
 
-const inp = { width: '100%', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 12px', fontFamily: "'Inter', sans-serif", fontSize: 13, color: 'var(--text)', outline: 'none', boxSizing: 'border-box' }
-const btnPrimary = { width: '100%', padding: 10, background: 'var(--btn-bg)', border: 'none', borderRadius: 8, color: 'var(--btn-color)', fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 500, cursor: 'pointer' }
-
-function Field({ label, children }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      <label style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</label>
-      {children}
-    </div>
-  )
+const inp = {
+  width: '100%',
+  background: 'var(--input-bg)',
+  border: '1px solid var(--border)',
+  borderRadius: 8,
+  padding: '9px 12px',
+  fontFamily: "'Inter', sans-serif",
+  fontSize: 13,
+  color: 'var(--text)',
+  outline: 'none',
+  boxSizing: 'border-box',
 }
 
-export default function Profile() {
-  const [profile, setProfile] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [uploadingAvatar, setUploadingAvatar] = useState(false)
-  const [success, setSuccess] = useState('')
-  const [error, setError] = useState('')
-  const [firstName, setFirstName] = useState('')
-  const [lastName, setLastName] = useState('')
-  const [oldPin, setOldPin] = useState('')
-  const [newPin, setNewPin] = useState('')
-  const [pinSuccess, setPinSuccess] = useState('')
-  const [pinError, setPinError] = useState('')
-  const [pinLoading, setPinLoading] = useState(false)
-  const [reqType, setReqType] = useState('fingerprint')
-  const [reqMsg, setReqMsg] = useState('')
-  const [reqSuccess, setReqSuccess] = useState(false)
-  const [reqLoading, setReqLoading] = useState(false)
-  const [requests, setRequests] = useState([])
-  const fileRef = useRef()
-  const navigate = useNavigate()
+const statusStyles = {
+  active: { background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0' },
+  upcoming: { background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' },
+  inactive: { background: 'var(--input-bg)', color: 'var(--text-muted)', border: '1px solid var(--border)' },
+}
 
-  useEffect(() => { loadProfile() }, [])
+const statusLabels = {
+  active: 'Активен',
+  upcoming: 'Предстоящ',
+  inactive: 'Неактивен',
+}
 
-  async function loadProfile() {
-    setLoading(true)
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) { navigate('/login'); return }
-    const { data: prof } = await supabase.from('users').select('*').eq('id', user.id).single()
-    setProfile(prof)
-    setFirstName(prof?.first_name || '')
-    setLastName(prof?.last_name || '')
-    const { data: reqs } = await supabase.from('requests').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
-    setRequests(reqs || [])
-    setLoading(false)
-  }
+function Field({ label, children }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <label style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</label>
+      {children}
+    </div>
+  )
+}
 
-  async function saveProfile() {
-    setSaving(true); setSuccess(''); setError('')
-    const { error } = await supabase.from('users').update({ first_name: firstName, last_name: lastName }).eq('id', profile.id)
-    if (error) setError('Грешка при запазване')
-    else setSuccess('Профилът е обновен успешно')
-    setSaving(false)
-  }
+function StatCard({ label, value, detail }) {
+  return (
+    <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 18px' }}>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: -0.5, lineHeight: 1, marginBottom: 6, color: 'var(--text)' }}>{value}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{detail}</div>
+    </div>
+  )
+}
 
-  async function changePin() {
-    setPinError(''); setPinSuccess('')
-    if (!oldPin || !newPin) { setPinError('Моля попълнете и двете полета'); return }
-    if (oldPin !== profile?.pin_hash) { setPinError('Старият ПИН е грешен'); return }
-    if (newPin.length !== 4 || isNaN(newPin)) { setPinError('Новият ПИН трябва да е 4 цифри'); return }
-    if (oldPin === newPin) { setPinError('Новият ПИН трябва да е различен'); return }
-    setPinLoading(true)
-    const { error } = await supabase.from('users').update({ pin_hash: newPin }).eq('id', profile.id)
-    if (error) setPinError('Грешка при промяна')
-    else { setPinSuccess('ПИН кодът е сменен успешно'); setOldPin(''); setNewPin(''); setProfile(p => ({ ...p, pin_hash: newPin })) }
-    setPinLoading(false)
-  }
+function ScheduleBadge({ state }) {
+  return (
+    <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 8px', borderRadius: 20, ...statusStyles[state] }}>
+      {statusLabels[state]}
+    </span>
+  )
+}
 
-  async function uploadAvatar(e) {
-    const file = e.target.files[0]
-    if (!file) return
-    setUploadingAvatar(true); setError(''); setSuccess('')
-    const ext = file.name.split('.').pop()
-    const { error: uploadError } = await supabase.storage.from('avatars').upload(`${profile.id}.${ext}`, file, { upsert: true })
-    if (uploadError) { setError('Грешка при качване'); setUploadingAvatar(false); return }
-    const { data } = supabase.storage.from('avatars').getPublicUrl(`${profile.id}.${ext}`)
-    await supabase.from('users').update({ avatar_url: data.publicUrl }).eq('id', profile.id)
-    setProfile(p => ({ ...p, avatar_url: data.publicUrl }))
-    setUploadingAvatar(false); setSuccess('Снимката е обновена')
-  }
+function getInitialForm() {
+  return {
+    userId: '',
+    days: getDefaultScheduleDays(),
+    openTime: '09:00',
+    closeTime: '18:00',
+  }
+}
 
-  async function submitRequest() {
-    if (!reqMsg.trim()) return
-    setReqLoading(true); setReqSuccess(false)
-    const { error } = await supabase.from('requests').insert({ user_id: profile.id, type: reqType, message: reqMsg, status: 'pending' })
-    if (!error) { setReqSuccess(true); setReqMsg(''); loadProfile() }
-    setReqLoading(false)
-  }
+function toggleDay(days, value) {
+  const normalizedDays = normalizeScheduleDays(days)
+  if (normalizedDays.includes(value)) {
+    return normalizedDays.filter((day) => day !== value)
+  }
 
-  function formatDate(ts) {
-    if (!ts) return '—'
-    return new Date(ts).toLocaleDateString('bg-BG', { day: 'numeric', month: 'long', year: 'numeric' }) + ', ' +
-      new Date(ts).toLocaleTimeString('bg-BG', { hour: '2-digit', minute: '2-digit' })
-  }
+  return normalizeScheduleDays([...normalizedDays, value])
+}
 
-  const REQUEST_LABELS = { pin: 'ПИН код', fingerprint: 'Пръстов отпечатък', nfc: 'NFC карта', other: 'Друго' }
-  const STATUS_STYLES = {
-    pending: { background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' },
-    approved: { background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0' },
-    rejected: { background: '#fef2f2', color: '#ef4444', border: '1px solid #fecaca' },
-  }
-  const STATUS_LABELS = { pending: 'Изчаква', approved: 'Одобрено', rejected: 'Отказано' }
+function toDatabaseTime(value) {
+  return value.length === 5 ? `${value}:00` : value
+}
 
-  if (loading) return <Layout><div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Зареждане...</div></Layout>
+export default function Schedule() {
+  const navigate = useNavigate()
+  const [users, setUsers] = useState([])
+  const [schedules, setSchedules] = useState([])
+  const [doorId, setDoorId] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [deletingId, setDeletingId] = useState('')
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [form, setForm] = useState(getInitialForm)
 
-  const activeReqs = requests.filter(r => r.status === 'pending')
-  const pastReqs = requests.filter(r => r.status !== 'pending')
+  const loadData = useCallback(async () => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) {
+      navigate('/login')
+      return
+    }
 
-  return (
-    <Layout>
-      <main style={{ padding: '28px 32px 40px', background: 'var(--bg)', minHeight: 'calc(100vh - 56px)' }}>
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: -0.5, color: 'var(--text)', marginBottom: 3 }}>Моят профил</div>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Управлявайте вашата информация и методи за достъп</div>
-        </div>
+    const { data: prof } = await supabase.from('users').select('*').eq('id', user.id).single()
+    if (!prof || prof.role !== 'admin') {
+      navigate('/dashboard')
+      return
+    }
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          {/* LEFT */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    const [usersResult, schedulesResult, doorResult] = await Promise.all([
+      supabase.from('users').select('*').order('first_name'),
+      supabase.from('schedules').select('*').limit(200),
+      supabase.from('doors').select('*').limit(1),
+    ])
 
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 16 }}>Профилна снимка</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                <div style={{ width: 72, height: 72, borderRadius: '50%', background: 'var(--input-bg)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' }}>
-                  {profile?.avatar_url
-                    ? <img src={profile.avatar_url} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
-                    : <span style={{ fontSize: 22, fontWeight: 600, color: 'var(--text-muted)' }}>{profile?.first_name?.[0]}{profile?.last_name?.[0]}</span>
-                  }
-                </div>
-                <div>
-                  <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={uploadAvatar} />
-                  <button style={{ padding: '8px 14px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: 'pointer', color: 'var(--text)' }} onClick={() => fileRef.current.click()} disabled={uploadingAvatar}>
-                    {uploadingAvatar ? 'Качване...' : 'Смени снимка'}
-                  </button>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>JPG, PNG до 5MB</div>
-                </div>
-              </div>
-            </div>
+    if (usersResult.error || schedulesResult.error || doorResult.error) {
+      setError('Графикът не можа да бъде зареден от Supabase.')
+      setLoading(false)
+      return
+    }
 
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 16 }}>Лична информация</div>
-              {success && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>{success}</div>}
-              {error && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{error}</div>}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <Field label="Име"><input style={inp} value={firstName} onChange={e => setFirstName(e.target.value)} /></Field>
-                  <Field label="Фамилия"><input style={inp} value={lastName} onChange={e => setLastName(e.target.value)} /></Field>
-                </div>
-                <Field label="Имейл"><input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.email || ''} disabled /></Field>
-                <Field label="Роля"><input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.role === 'admin' ? 'Администратор' : 'Потребител'} disabled /></Field>
-                <Field label="Статус"><input style={{ ...inp, color: 'var(--text-muted)' }} value={profile?.status === 'active' ? 'Активен' : 'Изчаква одобрение'} disabled /></Field>
-                <button style={btnPrimary} onClick={saveProfile} disabled={saving}>{saving ? 'Запазване...' : 'Запази промените'}</button>
-              </div>
-            </div>
+    const primaryDoorId = doorResult.data?.[0]?.id || ''
+    if (!primaryDoorId) {
+      setError('Няма конфигурирана врата за графика.')
+      setLoading(false)
+      return
+    }
 
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Смяна на ПИН код</div>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>Директна смяна без одобрение от администратор</div>
-              {pinSuccess && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>{pinSuccess}</div>}
-              {pinError && <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{pinError}</div>}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-                <Field label="Стар ПИН"><input style={inp} type="password" placeholder="Стар ПИН" maxLength={4} value={oldPin} onChange={e => setOldPin(e.target.value.replace(/\D/g, ''))} /></Field>
-                <Field label="Нов ПИН"><input style={inp} type="password" placeholder="Нов 4-цифрен ПИН" maxLength={4} value={newPin} onChange={e => setNewPin(e.target.value.replace(/\D/g, ''))} /></Field>
-                <button style={btnPrimary} onClick={changePin} disabled={pinLoading}>{pinLoading ? 'Промяна...' : 'Смени ПИН'}</button>
-              </div>
-            </div>
-          </div>
+    const allUsers = usersResult.data || []
+    setUsers(allUsers)
+    setSchedules(schedulesResult.data || [])
+    setDoorId(primaryDoorId)
 
-          {/* RIGHT */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    const firstAvailableUser =
+      allUsers.find((item) => item.status === 'active' && item.role !== 'admin')?.id || ''
 
-            {/* Single inquiry panel */}
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Подай запитване</div>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
-                Изпратете запитване към администратора за промяна на метод за достъп или друг въпрос
-              </div>
-              {reqSuccess && <div style={{ fontSize: 12, color: '#16a34a', padding: '8px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12 }}>Запитването е изпратено! Очаквайте одобрение.</div>}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <Field label="Тип запитване">
-                  <select style={inp} value={reqType} onChange={e => setReqType(e.target.value)}>
-                    <option value="fingerprint">Пръстов отпечатък — регистриране/смяна</option>
-                    <option value="nfc">NFC карта — регистриране/смяна</option>
-                    <option value="pin">ПИН код — нулиране (забравен)</option>
-                    <option value="other">Друго запитване</option>
-                  </select>
-                </Field>
+    setForm((current) => ({
+      ...current,
+      userId: current.userId || firstAvailableUser,
+    }))
 
-                {(reqType === 'fingerprint' || reqType === 'nfc') && (
-                  <div style={{ padding: '10px 12px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                    {reqType === 'fingerprint' ? '👆 Администраторът ще ви помоли да се явите физически за регистриране' : '💳 Администраторът ще регистрира нова или съществуваща NFC карта'}
-                  </div>
-                )}
+    setLoading(false)
+  }, [navigate])
 
-                <Field label="Описание">
-                  <textarea
-                    style={{ ...inp, minHeight: 90, resize: 'vertical', paddingTop: 10, lineHeight: 1.5 }}
-                    placeholder={
-                      reqType === 'fingerprint' ? 'Напр: Искам да регистрирам нов пръстов отпечатък...' :
-                      reqType === 'nfc' ? 'Напр: Изгубих картата си, нуждая се от нова...' :
-                      reqType === 'pin' ? 'Напр: Забравих ПИН кода си...' :
-                      'Опишете вашия въпрос или проблем...'
-                    }
-                    value={reqMsg}
-                    onChange={e => setReqMsg(e.target.value)}
-                  />
-                </Field>
-                <button style={{ ...btnPrimary, opacity: !reqMsg.trim() ? 0.5 : 1 }} onClick={submitRequest} disabled={reqLoading || !reqMsg.trim()}>
-                  {reqLoading ? 'Изпращане...' : 'Изпрати запитване'}
-                </button>
-              </div>
-            </div>
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadData()
+    }, 0)
 
-            {activeReqs.length > 0 && (
-              <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 14 }}>Активни запитвания</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {activeReqs.map(r => (
-                    <div key={r.id} style={{ padding: '12px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, color: '#1a1a1a' }}>{REQUEST_LABELS[r.type] || r.type}</div>
-                        <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 8px', borderRadius: 20, background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' }}>Изчаква</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: '#888' }}>{r.message}</div>
-                      <div style={{ fontSize: 11, color: '#b0b0a8', marginTop: 4 }}>{formatDate(r.created_at)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+    return () => window.clearTimeout(timeoutId)
+  }, [loadData])
 
-            {pastReqs.length > 0 && (
-              <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 14 }}>История на запитванията</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {pastReqs.map(r => (
-                    <div key={r.id} style={{ padding: '12px 14px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{REQUEST_LABELS[r.type] || r.type}</div>
-                        <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 8px', borderRadius: 20, ...STATUS_STYLES[r.status] }}>{STATUS_LABELS[r.status]}</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{r.message}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4 }}>{formatDate(r.created_at)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </main>
-    </Layout>
-  )
+  async function createSchedule() {
+    setError('')
+    setSuccess('')
+
+    const selectedDays = normalizeScheduleDays(form.days)
+
+    if (!form.userId || !doorId || selectedDays.length === 0 || !form.openTime || !form.closeTime) {
+      setError('Изберете потребител, поне един ден и часови диапазон.')
+      return
+    }
+
+    if (form.closeTime <= form.openTime) {
+      setError('Краят на графика трябва да е след началото.')
+      return
+    }
+
+    const hasOverlap = schedules.some((schedule) => {
+      if (schedule.user_id !== form.userId) return false
+      return overlapsSchedule(selectedDays, form.openTime, form.closeTime, schedule)
+    })
+
+    if (hasOverlap) {
+      setError('За този потребител вече има график, който се припокрива с избраните дни и часове.')
+      return
+    }
+
+    setSaving(true)
+
+    const { error: insertError } = await supabase.from('schedules').insert({
+      user_id: form.userId,
+      door_id: doorId,
+      days_of_week: selectedDays,
+      open_time: toDatabaseTime(form.openTime),
+      close_time: toDatabaseTime(form.closeTime),
+      is_active: true,
+    })
+
+    if (insertError) {
+      setError('Графикът не можа да бъде записан.')
+      setSaving(false)
+      return
+    }
+
+    const scheduledUser = users.find((item) => item.id === form.userId)
+    setSuccess(
+      `Графикът е записан за ${scheduledUser?.first_name || 'потребителя'}. В таблото той ще вижда, че може да управлява вратата само в зададените дни и часове.`
+    )
+
+    setForm((current) => ({
+      ...getInitialForm(),
+      userId: current.userId,
+    }))
+
+    await loadData()
+    setSaving(false)
+  }
+
+  async function deleteSchedule(scheduleId) {
+    if (!window.confirm('Сигурни ли сте, че искате да премахнете този график?')) return
+
+    setDeletingId(scheduleId)
+    setError('')
+    setSuccess('')
+
+    const { error: deleteError } = await supabase.from('schedules').delete().eq('id', scheduleId)
+
+    if (deleteError) {
+      setError('Графикът не можа да бъде премахнат.')
+      setDeletingId('')
+      return
+    }
+
+    setSuccess('Графикът беше премахнат.')
+    await loadData()
+    setDeletingId('')
+  }
+
+  if (loading) {
+    return (
+      <Layout>
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Зареждане...</div>
+      </Layout>
+    )
+  }
+
+  const activeUsers = users.filter((item) => item.status === 'active' && item.role !== 'admin')
+  const usersById = Object.fromEntries(users.map((item) => [item.id, item]))
+  const decoratedSchedules = [...schedules]
+    .map((schedule) => {
+      const currentWindow = getCurrentScheduleWindow(schedule)
+      const nextWindow = getNextScheduleWindow(schedule)
+      return {
+        ...schedule,
+        state: getScheduleState(schedule),
+        user: usersById[schedule.user_id],
+        currentWindow,
+        nextWindow,
+      }
+    })
+    .sort((left, right) => {
+      const stateOrder = { active: 0, upcoming: 1, inactive: 2 }
+      const stateDiff = stateOrder[left.state] - stateOrder[right.state]
+      if (stateDiff !== 0) return stateDiff
+
+      const leftTime = left.currentWindow?.start?.getTime() || left.nextWindow?.start?.getTime() || Number.MAX_SAFE_INTEGER
+      const rightTime = right.currentWindow?.start?.getTime() || right.nextWindow?.start?.getTime() || Number.MAX_SAFE_INTEGER
+      return leftTime - rightTime
+    })
+
+  const activeCount = decoratedSchedules.filter((schedule) => schedule.state === 'active').length
+  const upcomingCount = decoratedSchedules.filter((schedule) => schedule.state === 'upcoming').length
+  const assignedUsersCount = new Set(decoratedSchedules.map((schedule) => schedule.user_id)).size
+
+  return (
+    <Layout>
+      <main style={{ padding: '28px 32px 40px', background: 'var(--bg)', minHeight: 'calc(100vh - 56px)' }}>
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: -0.5, color: 'var(--text)', marginBottom: 3 }}>График за достъп</div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+            Само администратори могат да управляват графика. Потребителите ще виждат в таблото, че могат да управляват вратата само в зададените дни и часове.
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
+          <StatCard label="Активни графици" value={activeCount} detail="в момента" />
+          <StatCard label="Предстоящи графици" value={upcomingCount} detail="очакват старт" />
+          <StatCard label="Потребители с график" value={assignedUsersCount} detail="общо" />
+          <StatCard label="Активни служители" value={activeUsers.length} detail="налични за планиране" />
+        </div>
+
+        {error && (
+          <div style={{ fontSize: 12, color: '#ef4444', padding: '10px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
+
+        {success && (
+          <div style={{ fontSize: 12, color: '#16a34a', padding: '10px 12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, marginBottom: 16 }}>
+            {success}
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: '360px minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+          <section style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Нов график</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
+              Задайте за кои дни и между кои часове конкретен потребител може да управлява вратата дистанционно.
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <Field label="Потребител">
+                <select
+                  style={inp}
+                  value={form.userId}
+                  onChange={(event) => setForm((current) => ({ ...current, userId: event.target.value }))}
+                  disabled={activeUsers.length === 0}
+                >
+                  {activeUsers.length === 0 ? (
+                    <option value="">Няма активни потребители</option>
+                  ) : (
+                    activeUsers.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.first_name} {item.last_name} · {item.email}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </Field>
+
+              <Field label="Дни">
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 8 }}>
+                  {DAY_OPTIONS.map((day) => {
+                    const selected = form.days.includes(day.value)
+                    return (
+                      <button
+                        key={day.value}
+                        type="button"
+                        onClick={() => setForm((current) => ({ ...current, days: toggleDay(current.days, day.value) }))}
+                        style={{
+                          padding: '9px 0',
+                          borderRadius: 8,
+                          border: selected ? '1px solid transparent' : '1px solid var(--border)',
+                          background: selected ? 'var(--btn-bg)' : 'var(--card-bg)',
+                          color: selected ? 'var(--btn-color)' : 'var(--text)',
+                          fontFamily: "'Inter', sans-serif",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {day.shortLabel}
+                      </button>
+                    )
+                  })}
+                </div>
+              </Field>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <Field label="Начало">
+                  <input
+                    type="time"
+                    style={inp}
+                    value={form.openTime}
+                    onChange={(event) => setForm((current) => ({ ...current, openTime: event.target.value }))}
+                  />
+                </Field>
+
+                <Field label="Край">
+                  <input
+                    type="time"
+                    style={inp}
+                    value={form.closeTime}
+                    onChange={(event) => setForm((current) => ({ ...current, closeTime: event.target.value }))}
+                  />
+                </Field>
+              </div>
+
+              <button
+                style={{ width: '100%', padding: 10, background: 'var(--btn-bg)', border: 'none', borderRadius: 8, color: 'var(--btn-color)', fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 500, cursor: activeUsers.length === 0 ? 'not-allowed' : 'pointer', opacity: activeUsers.length === 0 ? 0.5 : 1 }}
+                onClick={createSchedule}
+                disabled={saving || activeUsers.length === 0}
+              >
+                {saving ? 'Записване...' : 'Запази график'}
+              </button>
+            </div>
+
+            <div style={{ marginTop: 16, padding: '10px 12px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              След запис потребителят ще вижда в таблото, че може да управлява вратата само по този график.
+            </div>
+          </section>
+
+          <section style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 3 }}>Планирани прозорци за достъп</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {decoratedSchedules.length === 0 ? 'Все още няма създадени графици.' : `${decoratedSchedules.length} графика общо`}
+              </div>
+            </div>
+
+            <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {decoratedSchedules.length === 0 ? (
+                <div style={{ padding: '24px 10px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                  Няма създадени графици.
+                </div>
+              ) : (
+                decoratedSchedules.map((schedule) => (
+                  <div key={schedule.id} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', background: schedule.state === 'active' ? 'rgba(240,253,244,0.5)' : 'var(--card-bg)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
+                            {schedule.user?.first_name} {schedule.user?.last_name}
+                          </div>
+                          <ScheduleBadge state={schedule.state} />
+                        </div>
+
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+                          {schedule.user?.email || 'Няма имейл'}
+                        </div>
+
+                        <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 6, lineHeight: 1.5 }}>
+                          {formatScheduleRule(schedule)}
+                        </div>
+
+                        {schedule.currentWindow && (
+                          <div style={{ fontSize: 12, color: '#166534', marginBottom: 6 }}>
+                            Активен прозорец: {formatAccessWindowShort(schedule.currentWindow.start, schedule.currentWindow.end)}
+                          </div>
+                        )}
+
+                        {!schedule.currentWindow && schedule.nextWindow && (
+                          <>
+                            <div style={{ fontSize: 12, color: '#92400e', marginBottom: 4 }}>
+                              Следващ прозорец: {formatAccessWindowShort(schedule.nextWindow.start, schedule.nextWindow.end)}
+                            </div>
+                            <div style={{ fontSize: 11, color: '#92400e', marginBottom: 6 }}>
+                              {formatCountdown(schedule.nextWindow.start)}
+                            </div>
+                          </>
+                        )}
+
+                        {schedule.state === 'inactive' && (
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+                            Този график в момента не дава активен достъп.
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={() => deleteSchedule(schedule.id)}
+                        disabled={deletingId === schedule.id}
+                        style={{ padding: '7px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, color: '#ef4444', fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                      >
+                        {deletingId === schedule.id ? 'Премахване...' : 'Премахни'}
+                      </button>
+                    </div>
+
+                    <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-light)' }}>
+                      Кратък преглед: {formatScheduleRule(schedule, true)}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </div>
+      </main>
+    </Layout>
+  )
 }

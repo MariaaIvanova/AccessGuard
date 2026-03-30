@@ -30,15 +30,15 @@ function Badge({ type }) {
 const TABS = ['Потребители', 'Запитвания', 'Черен списък', 'Одит лог']
 const REQUEST_LABELS = { pin: 'ПИН код', fingerprint: 'Пръстов отпечатък', nfc: 'NFC карта', other: 'Друго' }
 const ACTION_LABELS = {
-  emergency_lock: '🔴 Аварийно заключване',
-  emergency_unlock: '🟢 Деактивиране',
-  approve_user: '✅ Одобрен потребител',
-  block_user: '🚫 Блокиран потребител',
-  make_admin: '⭐ Направен администратор',
-  blacklist_user: '⛔ Добавен в черен списък',
-  unblacklist_user: '✅ Премахнат от черен списък',
-  request_approved: '✅ Одобрено запитване',
-  request_rejected: '❌ Отказано запитване',
+  emergency_lock: 'Аварийно заключване',
+  emergency_unlock: 'Деактивиране',
+  approve_user: 'Одобрен потребител',
+  block_user: 'Блокиран потребител',
+  make_admin: 'Направен администратор',
+  blacklist_user: 'Добавен в черен списък',
+  unblacklist_user: 'Премахнат от черен списък',
+  request_approved: 'Одобрено запитване',
+  request_rejected: 'Отказано запитване',
 }
 
 export default function Admin() {
@@ -168,7 +168,7 @@ export default function Admin() {
                           </div>
                           <div>
                             <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{u.first_name} {u.last_name}</div>
-                            {u.is_blacklisted && <div style={{ fontSize: 10, color: '#ef4444', fontWeight: 500 }}>⛔ Черен списък</div>}
+                            {u.is_blacklisted && <div style={{ fontSize: 10, color: '#ef4444', fontWeight: 500 }}>Черен списък</div>}
                           </div>
                         </div>
                       </td>
@@ -188,7 +188,7 @@ export default function Admin() {
                           )}
                           {u.id !== currentUser?.id && (
                             <button onClick={() => toggleBlacklist(u.id, u.is_blacklisted)} style={{ padding: '4px 10px', background: u.is_blacklisted ? '#f0fdf4' : '#fef2f2', border: `1px solid ${u.is_blacklisted ? '#bbf7d0' : '#fecaca'}`, borderRadius: 6, fontFamily: "'Inter', sans-serif", fontSize: 11, fontWeight: 500, cursor: 'pointer', color: u.is_blacklisted ? '#16a34a' : '#ef4444' }}>
-                              {u.is_blacklisted ? 'Премахни от ЧС' : '⛔ Черен списък'}
+                              {u.is_blacklisted ? 'Премахни от ЧС' : 'Черен списък'}
                             </button>
                           )}
                         </div>

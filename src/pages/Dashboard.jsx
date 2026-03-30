@@ -2,6 +2,13 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
+import { AI_NAME, BRAND_LOGO, BRAND_NAME } from '../branding'
+import {
+  formatAccessWindowShort,
+  getCurrentScheduleWindow,
+  getNextScheduleWindow,
+  isScheduleActive,
+} from '../accessSchedule'
 
 const METHOD_LABELS = { fingerprint: 'Пръстов отпечатък', pin: 'ПИН код', nfc: 'NFC карта', qr: 'QR код', remote: 'Дистанционно' }
 const DIRECTION_LABELS = { in: 'Влизане', out: 'Излизане' }
@@ -32,12 +39,14 @@ export default function Dashboard() {
   const [showPin, setShowPin] = useState(false)
   const [pin, setPin] = useState('')
   const [pinError, setPinError] = useState('')
-  const [chatMsgs, setChatMsgs] = useState([{ role: 'ai', text: 'Здравейте! Задайте ми въпрос за вашите влизания или статуса на вратата.' }])
+  const [chatMsgs, setChatMsgs] = useState([{ role: 'ai', text: `Здравейте! Аз съм ${AI_NAME}. Задайте ми въпрос за вашите влизания или статуса на вратата.` }])
   const [chatInput, setChatInput] = useState('')
   const [reqMsg, setReqMsg] = useState('')
   const [reqError, setReqError] = useState('')
   const [reqSuccess, setReqSuccess] = useState(false)
   const [reqLoading, setReqLoading] = useState(false)
+  const [accessSchedules, setAccessSchedules] = useState([])
+  const [scheduleSystemEnabled, setScheduleSystemEnabled] = useState(true)
   const chatEndRef = useRef(null)
   const navigate = useNavigate()
 
@@ -51,6 +60,24 @@ export default function Dashboard() {
     setUser(u)
     const { data: prof } = await supabase.from('users').select('*').eq('id', u.id).single()
     setProfile(prof)
+    if (prof?.role !== 'admin') {
+      const { data: scheduleData, error: scheduleError } = await supabase
+        .from('schedules')
+        .select('*')
+        .eq('user_id', u.id)
+        .limit(50)
+
+      if (scheduleError) {
+        setScheduleSystemEnabled(false)
+        setAccessSchedules([])
+      } else {
+        setScheduleSystemEnabled(true)
+        setAccessSchedules(scheduleData || [])
+      }
+    } else {
+      setScheduleSystemEnabled(true)
+      setAccessSchedules([])
+    }
     const { data: doorData } = await supabase.from('doors').select('*').limit(1).single()
     setDoor(doorData)
     const { data: logsData } = await supabase.from('access_logs').select('*, doors(name)').eq('user_id', u.id).order('timestamp', { ascending: false }).limit(5)
@@ -70,6 +97,16 @@ export default function Dashboard() {
   const peakHour = hourCounts.indexOf(Math.max(...hourCounts))
   const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7)
   const weekLogs = allLogs.filter(l => new Date(l.timestamp) >= weekAgo)
+  const isAdmin = profile?.role === 'admin'
+  const activeAccessSchedule = accessSchedules.find((schedule) => isScheduleActive(schedule)) || null
+  const activeAccessWindow = activeAccessSchedule ? getCurrentScheduleWindow(activeAccessSchedule) : null
+  const upcomingAccessEntry =
+    accessSchedules
+      .map((schedule) => ({ schedule, window: getNextScheduleWindow(schedule) }))
+      .filter((entry) => entry.window)
+      .sort((left, right) => left.window.start.getTime() - right.window.start.getTime())[0] || null
+  const upcomingAccessWindow = upcomingAccessEntry?.window || null
+  const canOpenDoor = isAdmin || !scheduleSystemEnabled || Boolean(activeAccessWindow)
 
   function addPin(d) {
     if (pin.length >= 4) return
@@ -82,6 +119,15 @@ export default function Dashboard() {
 
   async function submitPin(p = pin) {
     if (p.length < 4) return
+    if (!isAdmin && scheduleSystemEnabled && !activeAccessWindow) {
+      setPinError(
+        upcomingAccessWindow
+          ? `Нямате активен график. Следващият прозорец е ${formatAccessWindowShort(upcomingAccessWindow.start, upcomingAccessWindow.end)}.`
+          : 'Нямате активен график за дистанционно управление на вратата.'
+      )
+      setPin('')
+      return
+    }
     if (door?.is_locked) { setPinError('Аварийното заключване е активно'); setPin(''); return }
     if (p !== profile?.pin_hash) { setPinError('Грешен ПИН код'); setPin(''); return }
     await supabase.from('access_logs').insert({ user_id: user.id, door_id: door?.id, method: 'remote', direction: 'in', result: 'granted' })
@@ -91,6 +137,7 @@ export default function Dashboard() {
   }
 
   async function closeDoor() {
+    if (!canOpenDoor) return
     await supabase.from('doors').update({ status: 'closed' }).eq('id', door?.id)
     await supabase.from('access_logs').insert({ user_id: user.id, door_id: door?.id, method: 'remote', direction: 'out', result: 'granted' })
     loadData()
@@ -118,7 +165,6 @@ export default function Dashboard() {
     const todayStr = today.toISOString().slice(0, 10)
 
     const safeAllLogs = Array.isArray(allLogs) ? allLogs : []
-    const safeLogs = Array.isArray(logs) ? logs : []
 
     const todayLogs = safeAllLogs.filter((log) => {
       const ts = log?.timestamp || log?.created_at || ''
@@ -181,7 +227,7 @@ export default function Dashboard() {
       .join('\n')
 
     const systemPrompt = `
-Ти си AI security асистент в AccessGuard.
+Ти си ${AI_NAME}, security асистент в ${BRAND_NAME}.
 
 ПРАВИЛА:
 - Отговаряй само на български.
@@ -253,18 +299,18 @@ ${recentLogsText || 'Няма записи'}
     if (error) {
       setChatMsgs((prev) => [
         ...prev,
-        { role: 'ai', text: `Грешка при връзката с AI: ${error.message || 'Неуспешна заявка.'}` },
+        { role: 'ai', text: `Грешка при връзката с ${AI_NAME}: ${error.message || 'Неуспешна заявка.'}` },
       ])
       return
     }
 
-    const reply = data?.reply || 'Няма reply от AI услугата.'
+    const reply = data?.reply || `Няма отговор от ${AI_NAME}.`
 
     setChatMsgs((prev) => [...prev, { role: 'ai', text: reply }])
   } catch (err) {
     setChatMsgs((prev) => [
       ...prev,
-      { role: 'ai', text: `Грешка при заявката: ${err?.message || 'Неочаквана грешка.'}` },
+      { role: 'ai', text: `Грешка при заявката към ${AI_NAME}: ${err?.message || 'Неочаквана грешка.'}` },
     ])
   }
 }
@@ -280,7 +326,7 @@ ${recentLogsText || 'Няма записи'}
 
   function downloadReport() {
     const rows = [
-      ['Седмичен отчет — AccessGuard'],
+      [`Седмичен отчет — ${BRAND_NAME}`],
       ['Период', `${weekAgo.toLocaleDateString('bg-BG')} — ${new Date().toLocaleDateString('bg-BG')}`],
       ['Общо влизания', weekLogs.length],
       ['Разрешени', weekLogs.filter(l => l.result === 'granted').length],
@@ -300,6 +346,15 @@ ${recentLogsText || 'Няма записи'}
 
   const lastLog = logs[0]
   const isLocked = door?.is_locked
+  const closeBlocked = !canOpenDoor
+  const openBlocked = isLocked || !canOpenDoor
+  const scheduleNoticeTone = activeAccessWindow ? 'active' : upcomingAccessWindow ? 'upcoming' : 'inactive'
+  const scheduleNoticeStyles = {
+    active: { background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534', iconBg: '#16a34a' },
+    upcoming: { background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', iconBg: '#f59e0b' },
+    inactive: { background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', iconBg: '#ef4444' },
+  }
+  const currentScheduleNotice = scheduleNoticeStyles[scheduleNoticeTone]
 
   return (
     <Layout>
@@ -312,7 +367,7 @@ ${recentLogsText || 'Няма записи'}
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               </div>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#ef4444' }}>🔴 АВАРИЙНОТО ЗАКЛЮЧВАНЕ Е АКТИВНО</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#ef4444' }}>АВАРИЙНОТО ЗАКЛЮЧВАНЕ Е АКТИВНО</div>
                 <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>Никой не може да отвори вратата. Само администратор може да деактивира заключването.</div>
               </div>
               {profile?.role === 'admin' && (
@@ -320,6 +375,34 @@ ${recentLogsText || 'Няма записи'}
                   Деактивирай
                 </button>
               )}
+            </div>
+          )}
+
+          {!isAdmin && scheduleSystemEnabled && (
+            <div style={{ background: currentScheduleNotice.background, border: currentScheduleNotice.border, borderRadius: 10, padding: '12px 16px', marginBottom: 20, display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              <div style={{ width: 32, height: 32, background: currentScheduleNotice.iconBg, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                {activeAccessSchedule ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></svg>
+                )}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: currentScheduleNotice.color }}>
+                  {activeAccessWindow
+                    ? 'Имате активен прозорец за достъп'
+                    : upcomingAccessWindow
+                    ? 'Имате предстоящ график за достъп'
+                    : 'В момента нямате активен график'}
+                </div>
+                <div style={{ fontSize: 12, color: currentScheduleNotice.color, marginTop: 2, lineHeight: 1.5 }}>
+                  {activeAccessWindow
+                    ? `Можете да управлявате вратата само в периода ${formatAccessWindowShort(activeAccessWindow.start, activeAccessWindow.end)}.`
+                    : upcomingAccessWindow
+                    ? `Следващият ви период за управление е ${formatAccessWindowShort(upcomingAccessWindow.start, upcomingAccessWindow.end)}.`
+                    : 'Дистанционното управление е разрешено само в период, зададен от администратор.'}
+                </div>
+              </div>
             </div>
           )}
 
@@ -341,12 +424,12 @@ ${recentLogsText || 'Няма записи'}
                 </button>
               )}
               {door?.status === 'open' && !isLocked && (
-                <button onClick={closeDoor} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 14px', background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: 'pointer' }}>
+                <button onClick={() => !closeBlocked && closeDoor()} title={!canOpenDoor ? 'Дистанционното управление е достъпно само в активен график' : 'Затвори врата'} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 14px', background: closeBlocked ? 'var(--input-bg)' : 'var(--card-bg)', color: closeBlocked ? 'var(--text-muted)' : 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: closeBlocked ? 'not-allowed' : 'pointer', opacity: closeBlocked ? 0.5 : 1 }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                   Затвори врата
                 </button>
               )}
-              <button onClick={() => !isLocked && setShowPin(true)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 14px', background: isLocked ? 'var(--input-bg)' : 'var(--btn-bg)', color: isLocked ? 'var(--text-muted)' : 'var(--btn-color)', border: isLocked ? '1px solid var(--border)' : 'none', borderRadius: 8, fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: isLocked ? 'not-allowed' : 'pointer', opacity: isLocked ? 0.5 : 1 }}>
+              <button onClick={() => !openBlocked && setShowPin(true)} title={!canOpenDoor ? 'Дистанционното управление е достъпно само в активен график' : 'Отвори с ПИН'} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 14px', background: openBlocked ? 'var(--input-bg)' : 'var(--btn-bg)', color: openBlocked ? 'var(--text-muted)' : 'var(--btn-color)', border: openBlocked ? '1px solid var(--border)' : 'none', borderRadius: 8, fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: openBlocked ? 'not-allowed' : 'pointer', opacity: openBlocked ? 0.5 : 1 }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                 Отвори с ПИН
               </button>
@@ -356,7 +439,7 @@ ${recentLogsText || 'Няма записи'}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
             <div style={{ background: 'var(--card-bg)', border: isLocked ? '2px solid #ef4444' : '1px solid var(--border)', borderRadius: 12, padding: '16px 18px', transition: 'border 0.2s' }}>
               <div style={{ fontSize: 12, color: isLocked ? '#ef4444' : 'var(--text-muted)', marginBottom: 8, fontWeight: isLocked ? 600 : 400 }}>
-                {isLocked ? '🔴 Статус на врата' : 'Статус на врата'}
+                Статус на врата
               </div>
               <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: -0.5, lineHeight: 1, marginBottom: 6, color: isLocked ? '#ef4444' : door?.status === 'open' ? '#22c55e' : 'var(--text)' }}>
                 {isLocked ? 'Заключена' : door?.status === 'open' ? 'Отворена' : 'Затворена'}
@@ -525,12 +608,12 @@ ${recentLogsText || 'Няма записи'}
           <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                <div style={{ width: 28, height: 28, background: 'var(--btn-bg)', borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--btn-color)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <div style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.78)', border: '1px solid var(--border)', borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                  <img src={BRAND_LOGO} alt={AI_NAME} style={{ width: '88%', height: '88%', objectFit: 'contain' }} />
                 </div>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>AccessAI</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Достъп до вашите данни</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{AI_NAME}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>AI достъп до вашите данни</div>
                 </div>
               </div>
               <div style={{ fontSize: 11, color: '#16a34a' }}>online</div>
@@ -548,7 +631,7 @@ ${recentLogsText || 'Няма записи'}
             <div ref={chatEndRef} />
           </div>
           <div style={{ padding: '12px 14px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
-            <input style={{ flex: 1, background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 12px', fontFamily: "'Inter', sans-serif", fontSize: 12, color: 'var(--text)', outline: 'none' }} placeholder="Задайте въпрос..." value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendChat(chatInput)} />
+            <input style={{ flex: 1, background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 12px', fontFamily: "'Inter', sans-serif", fontSize: 12, color: 'var(--text)', outline: 'none' }} placeholder={`Попитайте ${AI_NAME}...`} value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendChat(chatInput)} />
             <button style={{ width: 32, height: 32, background: 'var(--btn-bg)', border: 'none', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} onClick={() => sendChat(chatInput)}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--btn-color)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
             </button>

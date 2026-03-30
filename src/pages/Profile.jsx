@@ -195,7 +195,7 @@ export default function Profile() {
 
                 {(reqType === 'fingerprint' || reqType === 'nfc') && (
                   <div style={{ padding: '10px 12px', background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                    {reqType === 'fingerprint' ? '👆 Администраторът ще ви помоли да се явите физически за регистриране' : '💳 Администраторът ще регистрира нова или съществуваща NFC карта'}
+                    {reqType === 'fingerprint' ? 'Администраторът ще ви помоли да се явите физически за регистриране' : 'Администраторът ще регистрира нова или съществуваща NFC карта'}
                   </div>
                 )}
 

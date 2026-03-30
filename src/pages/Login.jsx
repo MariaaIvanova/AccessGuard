@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../supabase'
 import { BRAND_BANNER, BRAND_LOGO, BRAND_NAME, BRAND_SUBTITLE } from '../branding'
@@ -8,7 +8,9 @@ export default function Login() {
   const [loginEmail, setLoginEmail] = useState('')
   const [loginPass, setLoginPass] = useState('')
   const [loginError, setLoginError] = useState('')
+  const [loginSuccess, setLoginSuccess] = useState('')
   const [loading, setLoading] = useState(false)
+  const [forgotLoading, setForgotLoading] = useState(false)
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [regEmail, setRegEmail] = useState('')
@@ -16,11 +18,49 @@ export default function Login() {
   const [regPin, setRegPin] = useState('')
   const [regError, setRegError] = useState('')
   const [regSuccess, setRegSuccess] = useState(false)
+  const [recoveryPass, setRecoveryPass] = useState('')
+  const [recoveryConfirm, setRecoveryConfirm] = useState('')
+  const [recoveryError, setRecoveryError] = useState('')
+  const [recoverySuccess, setRecoverySuccess] = useState('')
+  const [recoveryLoading, setRecoveryLoading] = useState(false)
   const navigate = useNavigate()
+
+  useEffect(() => {
+    let active = true
+
+    async function detectRecoveryMode() {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (!active) return
+
+      if ((window.location.href.includes('type=recovery') || window.location.href.includes('mode=recovery')) && session) {
+        setTab('recovery')
+      }
+    }
+
+    void detectRecoveryMode()
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY' || (session && (window.location.href.includes('type=recovery') || window.location.href.includes('mode=recovery')))) {
+        setTab('recovery')
+        setLoginError('')
+        setLoginSuccess('')
+      }
+    })
+
+    return () => {
+      active = false
+      subscription.unsubscribe()
+    }
+  }, [])
 
   const handleLogin = async () => {
     if (!loginEmail || !loginPass) { setLoginError('Моля попълнете всички полета'); return }
-    setLoading(true); setLoginError('')
+    setLoading(true); setLoginError(''); setLoginSuccess('')
     const { error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPass })
     if (error) setLoginError('Грешен имейл или парола')
     else navigate('/dashboard')
@@ -42,6 +82,67 @@ export default function Login() {
     setRegSuccess(true); setLoading(false)
   }
 
+  const handleForgotPassword = async () => {
+    const email = loginEmail.trim().toLowerCase()
+
+    if (!email) {
+      setLoginError('Въведете имейл, за да изпратим линк за нова парола.')
+      setLoginSuccess('')
+      return
+    }
+
+    setForgotLoading(true)
+    setLoginError('')
+    setLoginSuccess('')
+
+    const redirectTo = `${window.location.origin}${window.location.pathname}#/login?mode=recovery`
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
+
+    if (error) {
+      setLoginError('Не успяхме да изпратим линк за нова парола.')
+    } else {
+      setLoginSuccess('Изпратихме ви линк за нова парола. Проверете входящата си поща.')
+    }
+
+    setForgotLoading(false)
+  }
+
+  const handleRecoveryPassword = async () => {
+    setRecoveryError('')
+    setRecoverySuccess('')
+
+    if (!recoveryPass || !recoveryConfirm) {
+      setRecoveryError('Попълнете и двете полета.')
+      return
+    }
+
+    if (recoveryPass.length < 6) {
+      setRecoveryError('Новата парола трябва да е поне 6 символа.')
+      return
+    }
+
+    if (recoveryPass !== recoveryConfirm) {
+      setRecoveryError('Паролите не съвпадат.')
+      return
+    }
+
+    setRecoveryLoading(true)
+
+    const { error } = await supabase.auth.updateUser({ password: recoveryPass })
+
+    if (error) {
+      setRecoveryError('Паролата не можа да бъде обновена.')
+      setRecoveryLoading(false)
+      return
+    }
+
+    setRecoverySuccess('Паролата е обновена успешно. Пренасочваме ви към таблото.')
+    setRecoveryLoading(false)
+    window.setTimeout(() => navigate('/dashboard'), 900)
+  }
+
+  const isRecovery = tab === 'recovery'
+
   return (
     <div style={s.page}>
       <div style={s.brand}>
@@ -56,23 +157,35 @@ export default function Login() {
         <div style={s.bannerWrap}>
           <img src={BRAND_BANNER} alt={BRAND_NAME} style={s.banner} />
         </div>
-        <div style={s.greeting}>Добре дошли</div>
-        <div style={s.greetingSub}>Влезте или създайте нов акаунт в {BRAND_NAME}</div>
-
-        <div style={s.tabs}>
-          {['login', 'register'].map((t, i) => (
-            <button key={t} onClick={() => setTab(t)} style={{ ...s.tab, ...(tab === t ? s.tabActive : {}) }}>
-              {i === 0 ? 'Вход' : 'Регистрация'}
-            </button>
-          ))}
+        <div style={s.greeting}>{isRecovery ? 'Нова парола' : 'Добре дошли'}</div>
+        <div style={s.greetingSub}>
+          {isRecovery
+            ? 'Задайте нова парола за профила си и продължете към системата.'
+            : `Влезте или създайте нов акаунт в ${BRAND_NAME}`}
         </div>
+
+        {!isRecovery && (
+          <div style={s.tabs}>
+            {['login', 'register'].map((t, i) => (
+              <button key={t} onClick={() => setTab(t)} style={{ ...s.tab, ...(tab === t ? s.tabActive : {}) }}>
+                {i === 0 ? 'Вход' : 'Регистрация'}
+              </button>
+            ))}
+          </div>
+        )}
 
         {tab === 'login' && (
           <div style={s.form}>
             <Field label="Имейл"><Input type="email" placeholder="example@mail.com" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} icon={<IconMail />} /></Field>
             <Field label="Парола"><Input type="password" placeholder="••••••••" value={loginPass} onChange={e => setLoginPass(e.target.value)} icon={<IconLock />} /></Field>
+            {loginSuccess && <div style={s.success}>{loginSuccess}</div>}
             {loginError && <div style={s.error}>{loginError}</div>}
             <Btn onClick={handleLogin} disabled={loading}>{loading ? 'Влизане...' : 'Вход'}</Btn>
+            <div style={s.helperRow}>
+              <button onClick={handleForgotPassword} disabled={forgotLoading} style={s.linkBtn}>
+                {forgotLoading ? 'Изпращане...' : 'Забравена парола?'}
+              </button>
+            </div>
           </div>
         )}
 
@@ -94,6 +207,17 @@ export default function Login() {
                 <div style={s.note}>Акаунтът ще бъде активиран след одобрение от администратор</div>
               </>
             )}
+          </div>
+        )}
+
+        {tab === 'recovery' && (
+          <div style={s.form}>
+            {recoverySuccess && <div style={s.success}>{recoverySuccess}</div>}
+            {recoveryError && <div style={s.error}>{recoveryError}</div>}
+            <Field label="Нова парола"><Input type="password" placeholder="Поне 6 символа" value={recoveryPass} onChange={e => setRecoveryPass(e.target.value)} icon={<IconLock />} /></Field>
+            <Field label="Повтори паролата"><Input type="password" placeholder="Повторете новата парола" value={recoveryConfirm} onChange={e => setRecoveryConfirm(e.target.value)} icon={<IconLock />} /></Field>
+            <Btn onClick={handleRecoveryPassword} disabled={recoveryLoading}>{recoveryLoading ? 'Запазване...' : 'Запази новата парола'}</Btn>
+            <button onClick={() => setTab('login')} style={s.linkBtn}>Назад към вход</button>
           </div>
         )}
       </div>
@@ -187,6 +311,8 @@ const s = {
   success: { fontSize: 13, color: '#16a34a', padding: '12px 14px', background: '#f0fdf4', borderWidth: 1, borderStyle: 'solid', borderColor: '#bbf7d0', borderRadius: 8, lineHeight: 1.5 },
   btn: { width: '100%', padding: '10px', background: 'linear-gradient(135deg, #dd7fa2, #c9638b)', border: 'none', borderRadius: 10, color: '#fff', fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 2, boxShadow: '0 12px 22px rgba(201, 99, 139, 0.22)' },
   note: { fontSize: 11, color: '#8e7881', textAlign: 'center', lineHeight: 1.5 },
+  helperRow: { display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' },
+  linkBtn: { padding: 0, background: 'none', border: 'none', color: '#8f395d', fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: 'pointer', textDecoration: 'none' },
   footer: { display: 'flex', justifyContent: 'space-between', width: '100%', maxWidth: 420, marginTop: 14, padding: '0 2px' },
   footerText: { fontSize: 11, color: '#c3a7b1' },
   footerLink: { fontSize: 11, color: '#8e7881', textDecoration: 'none' },

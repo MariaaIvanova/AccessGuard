@@ -1,0 +1,126 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body,
+input,
+select,
+textarea,
+button {
+  font-family: 'Inter', sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  position: relative;
+  overflow-x: hidden;
+}
+
+body[data-theme="pink"]::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle at 10% 20%, rgba(255, 255, 255, .85) 0 1px, transparent 1.2px),
+    radial-gradient(circle at 70% 40%, rgba(255, 255, 255, .55) 0 1px, transparent 1.3px),
+    radial-gradient(circle at 40% 80%, rgba(255, 211, 226, .8) 0 1px, transparent 1.3px);
+  background-size: 180px 180px, 220px 220px, 260px 260px;
+  opacity: .55;
+  animation: layout-drift 18s linear infinite;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-light);
+}
+
+select option {
+  background: var(--card-bg);
+  color: var(--text);
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+@keyframes layout-drift {
+  from {
+    transform: translateY(0px);
+  }
+
+  to {
+    transform: translateY(-36px);
+  }
+}
+
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.page-main {
+  padding: 28px 28px 40px;
+}
+
+.grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.grid-fixed {
+  display: grid;
+  grid-template-columns: minmax(0, 360px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 640px) {
+  .page-main {
+    padding: 16px 14px 32px !important;
+  }
+
+  .grid-2col {
+    grid-template-columns: 1fr !important;
+  }
+
+  .grid-fixed {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 600px) {
+  .nav-hamburger {
+    display: flex !important;
+  }
+
+  .nav-name-text {
+    display: none !important;
+  }
+
+  nav {
+    display: none !important;
+  }
+
+  .nav-brand-text {
+    display: none !important;
+  }
+}

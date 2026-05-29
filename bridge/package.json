@@ -1,0 +1,19 @@
+{
+  "name": "accessguard-bridge",
+  "version": "0.1.0",
+  "description": "MQTT ↔ Supabase bridge for AccessGuard hardware integration",
+  "main": "bridge.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bridge.js",
+    "dev": "node --watch bridge.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "dotenv": "^16.4.5",
+    "mqtt": "^5.10.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

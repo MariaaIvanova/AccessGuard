@@ -1,3 +1,13 @@
+# Dependencies
+node_modules
+bridge/node_modules
+
+# Build outputs
+dist
+dist-ssr
+build
+*.local
+
 # Logs
 logs
 *.log
@@ -7,18 +17,28 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# Environment variables and secrets (NEVER commit these!)
+.env
+.env.local
+.env.*.local
+bridge/.env
+firmware/accessguard_esp32/secrets.h
 
-# Editor directories and files
+# Editor / IDE
 .vscode/*
 !.vscode/extensions.json
 .idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+._*
+
+# Misc
+*.pid
+.cache

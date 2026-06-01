@@ -41,7 +41,7 @@ export default function Dashboard() {
   const [pin, setPin] = useState('')
   const [pinError, setPinError] = useState('')
   const [chatOpen, setChatOpen] = useState(false)
-  const [chatMsgs, setChatMsgs] = useState([{ role: 'ai', text: `Здравейте! Аз съм ${AI_NAME}. Задайте ми въпрос за вашите влизания или статуса на вратата.` }])
+  const [chatMsgs, setChatMsgs] = useState([{ role: 'ai', text: `Здравейте! Аз съм ${AI_NAME}. Мога да отговарям на въпроси за вашите влизания и да изпълнявам команди — например „затвори вратата", „статус", „аварийно заключване".` }])
   const [chatInput, setChatInput] = useState('')
   const [accessSchedules, setAccessSchedules] = useState([])
   const chatEndRef = useRef(null)
@@ -173,8 +173,8 @@ export default function Dashboard() {
       setPin(''); return
     }
     setShowPin(false); clearPin()
+    setDoor((d) => d ? { ...d, status: 'open', last_opened_at: new Date().toISOString() } : d)  // Optimistic update
     await showAlert({ title: 'Успешно действие', message: 'Командата е изпратена. Вратата ще щракне след секунда.', confirmLabel: 'Разбрах', tone: 'success' })
-    // Realtime subscription автоматично ще обнови doors.status
   }
 
   async function closeDoor() {
@@ -186,7 +186,9 @@ export default function Dashboard() {
     }
     if (!data?.success) {
       await showAlert({ title: 'Не може да бъде затворено', message: data?.reason || 'Неизвестна причина', confirmLabel: 'Разбрах', tone: 'warning' })
+      return
     }
+    setDoor((d) => d ? { ...d, status: 'closed' } : d)  // Optimistic update
   }
 
   async function emergencyLock() {
@@ -203,12 +205,142 @@ export default function Dashboard() {
     await supabase.from('audit_logs').insert({ admin_id: user.id, action: newLocked ? 'emergency_lock' : 'emergency_unlock', details: { door_id: door?.id, timestamp: new Date().toISOString() } })
   }
 
+  function detectIntent(text) {
+    const t = ' ' + text.toLowerCase().trim() + ' '
+    // Статус — провери първо, защото „вратата отворена ли е" не е команда
+    if (/(стат|как е вратата|каква.*врата|какво.*състояни|изправн|онлайн ли|е ли отворена|е ли затворена)/i.test(t)) {
+      return { type: 'status' }
+    }
+    // Аварийно отключване
+    if (/(деактивир|спри.*заключ|отключи аварий|махни.*заключ|emergency.*off|emergency.*unlock)/i.test(t)) {
+      return { type: 'emergency_unlock' }
+    }
+    // Аварийно заключване
+    if (/(аварийн|спешн|блокирай|emergency.*lock)/i.test(t) || (/заключи/i.test(t) && !/отключ/i.test(t))) {
+      return { type: 'emergency_lock' }
+    }
+    // Затваряне
+    if (/(затвор|close.*door|relock)/i.test(t)) {
+      return { type: 'close' }
+    }
+    // Отваряне (изисква PIN)
+    if (/(отвор|пусни|open.*door|unlock)/i.test(t)) {
+      return { type: 'open_with_pin' }
+    }
+    // Колко влизания днес
+    if (/(колко.*влиз|колко.*днес|брой.*днес|how many.*today)/i.test(t)) {
+      return { type: 'count_today' }
+    }
+    return null
+  }
+
+  function pushAIMessage(text) {
+    setChatMsgs((prev) => [...prev, { role: 'ai', text }])
+  }
+
+  async function executeAIIntent(intent) {
+    if (intent.type === 'status') {
+      const physicalState = isLocked ? '🔒 Аварийно заключена' : door?.status === 'open' ? '🟢 Отворена' : '⚪ Затворена'
+      const onlineState = door?.last_heartbeat
+        ? (Date.now() - new Date(door.last_heartbeat).getTime() < 90000 ? 'устройството е онлайн' : 'устройството е офлайн')
+        : 'устройството не е свързано'
+      pushAIMessage(`Вратата в момента е ${physicalState}, ${onlineState}. Днес имам регистрирани ${todayCount} влизания.`)
+      return
+    }
+    if (intent.type === 'count_today') {
+      pushAIMessage(`Днес имам ${todayCount} ${todayCount === 1 ? 'влизане' : 'влизания'} общо.`)
+      return
+    }
+    if (intent.type === 'open_with_pin') {
+      if (openBlocked) {
+        if (isLocked) pushAIMessage('Не мога да отворя — аварийното заключване е активно.')
+        else if (inMaintenance) pushAIMessage('Не мога да отворя — системата е в режим на поддръжка.')
+        else pushAIMessage('Нямате активен график за дистанционно отваряне в момента.')
+        return
+      }
+      pushAIMessage('За дистанционно отваряне ми трябва вашият ПИН. Отварям клавиатурата сега — въведете 4-цифрения си код.')
+      setShowPin(true)
+      return
+    }
+    if (intent.type === 'close') {
+      if (!canOpenDoor) {
+        pushAIMessage('Нямате право да затворите вратата от ваше име — необходим е активен график или администраторски достъп.')
+        return
+      }
+      if (!door?.id) {
+        pushAIMessage('Няма свързана врата.')
+        return
+      }
+      pushAIMessage('Изпращам команда за затваряне...')
+      const { data, error } = await supabase.rpc('request_remote_close', { p_door_id: door.id })
+      if (error) {
+        pushAIMessage(`Възникна грешка: ${error.message}`)
+      } else if (!data?.success) {
+        pushAIMessage(`Не успях да затворя вратата (${data?.reason || 'неизвестна причина'}).`)
+      } else {
+        setDoor((d) => d ? { ...d, status: 'closed' } : d)  // Optimistic update — мигновен UI feedback
+        pushAIMessage('✓ Командата е изпратена. Вратата ще се затвори след секунда.')
+      }
+      return
+    }
+    if (intent.type === 'emergency_lock') {
+      if (!isAdmin) {
+        pushAIMessage('Само администратор може да активира аварийно заключване.')
+        return
+      }
+      if (door?.is_locked) {
+        pushAIMessage('Вратата вече е в режим на аварийно заключване.')
+        return
+      }
+      pushAIMessage('⚠ Активирам аварийно заключване — всички влизания ще бъдат блокирани.')
+      await supabase.from('doors').update({ is_locked: true, status: 'closed' }).eq('id', door.id)
+      await supabase.from('audit_logs').insert({
+        admin_id: user.id, action: 'emergency_lock',
+        details: { door_id: door.id, source: 'ai_chat', timestamp: new Date().toISOString() },
+      })
+      await supabase.from('device_commands').insert({
+        door_id: door.id, command: 'emergency_lock', status: 'pending', issued_by: user.id,
+      })
+      pushAIMessage('✓ Аварийното заключване е активно. За деактивиране — кажи „деактивирай заключването".')
+      return
+    }
+    if (intent.type === 'emergency_unlock') {
+      if (!isAdmin) {
+        pushAIMessage('Само администратор може да деактивира аварийно заключване.')
+        return
+      }
+      if (!door?.is_locked) {
+        pushAIMessage('Аварийното заключване не е активно в момента.')
+        return
+      }
+      pushAIMessage('Деактивирам аварийното заключване...')
+      await supabase.from('doors').update({ is_locked: false, status: 'closed' }).eq('id', door.id)
+      await supabase.from('audit_logs').insert({
+        admin_id: user.id, action: 'emergency_unlock',
+        details: { door_id: door.id, source: 'ai_chat', timestamp: new Date().toISOString() },
+      })
+      await supabase.from('device_commands').insert({
+        door_id: door.id, command: 'emergency_unlock', status: 'pending', issued_by: user.id,
+      })
+      pushAIMessage('✓ Аварийното заключване е деактивирано. Системата приема нормален достъп.')
+      return
+    }
+  }
+
   async function sendChat(text) {
     const clean = text.trim()
     if (!clean) return
     setChatInput('')
     const nextMsgs = [...chatMsgs, { role: 'user', text: clean }]
     setChatMsgs(nextMsgs)
+
+    // Първо: ако е известна команда — изпълни я директно (без LLM)
+    const intent = detectIntent(clean)
+    if (intent) {
+      await executeAIIntent(intent)
+      return
+    }
+
     try {
       const today = new Date(); const todayStr = today.toISOString().slice(0, 10)
       const safeAllLogs = Array.isArray(allLogs) ? allLogs : []
@@ -229,7 +361,23 @@ export default function Dashboard() {
       if (door?.is_locked) suspiciousFlags.push('Вратата е в режим аварийно заключване.')
       if (deniedRecent >= 3) suspiciousFlags.push(`В последните 10 записа има ${deniedRecent} отказани опита.`)
       const recentLogsText = safeAllLogs.slice(0, 8).map((log, i) => `${i + 1}. ${log?.timestamp ? formatDate(log.timestamp) : '—'} | ${DIRECTION_LABELS[log?.direction] || '—'} | ${METHOD_LABELS[log?.method] || '—'} | ${log?.result === 'granted' ? 'Разрешен' : log?.result === 'denied' ? 'Отказан' : '—'}`).join('\n')
-      const systemPrompt = `Ти си ${AI_NAME}, security асистент в ${BRAND_NAME}.\nПОТРЕБИТЕЛ: ${profile?.first_name || ''} ${profile?.last_name || ''}, ${profile?.role || 'user'}\nВРАТА: ${door?.status || 'unknown'}, Заключена: ${door?.is_locked ? 'Да' : 'Не'}\nСТАТИСТИКА: Логове днес: ${todayLogs.length}, Разрешени: ${grantedToday}, Отказани: ${deniedToday}, Пиков час: ${peakHourLocal}:00, Най-използван метод: ${mostUsedMethod}\nПОДОЗРИТЕЛНО: ${suspiciousFlags.length ? suspiciousFlags.join(' ') : 'Няма'}\nПОСЛЕДНИ ЗАПИСИ:\n${recentLogsText || 'Няма'}\nОтговаряй само на български, кратко и точно.`
+      const systemPrompt = `Ти си ${AI_NAME}, security асистент в ${BRAND_NAME}.
+Освен да отговаряш на въпроси, можеш и да изпълняваш команди (тези команди се обработват от системата автоматично, не от тебе):
+- „затвори вратата" → затваря вратата
+- „отвори вратата" → отваря клавиатурата за ПИН
+- „аварийно заключване" / „заключи" → активира блокировка (само админи)
+- „деактивирай заключването" → изключва блокировката (само админи)
+- „статус" / „как е вратата" → връща текущо състояние
+- „колко влизания днес" → връща брой
+
+Ако потребителят пита за нещо, което не е команда, отговаряй кратко и точно на български.
+
+ПОТРЕБИТЕЛ: ${profile?.first_name || ''} ${profile?.last_name || ''}, ${profile?.role || 'user'}
+ВРАТА: ${door?.status || 'unknown'}, Заключена: ${door?.is_locked ? 'Да' : 'Не'}
+СТАТИСТИКА: Логове днес: ${todayLogs.length}, Разрешени: ${grantedToday}, Отказани: ${deniedToday}, Пиков час: ${peakHourLocal}:00, Най-използван метод: ${mostUsedMethod}
+ПОДОЗРИТЕЛНО: ${suspiciousFlags.length ? suspiciousFlags.join(' ') : 'Няма'}
+ПОСЛЕДНИ ЗАПИСИ:
+${recentLogsText || 'Няма'}`
       const messagesForModel = nextMsgs.map((m) => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.text }))
       const { data, error } = await supabase.functions.invoke('chat', { body: { system: systemPrompt, messages: messagesForModel } })
       if (error) { setChatMsgs((prev) => [...prev, { role: 'ai', text: `Грешка: ${error.message || 'Неуспешна заявка.'}` }]); return }
@@ -362,7 +510,7 @@ export default function Dashboard() {
                     Затвори врата
                   </button>
                 )}
-                <button onClick={() => !openBlocked && setShowPin(true)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 14px', background: openBlocked ? 'var(--input-bg)' : 'var(--btn-bg)', color: openBlocked ? 'var(--text-muted)' : 'var(--btn-color)', border: openBlocked ? '1px solid var(--border)' : 'none', borderRadius: 8, fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: openBlocked ? 'not-allowed' : 'pointer', opacity: openBlocked ? 0.5 : 1 }}>
+                <button data-tour="open-pin-btn" onClick={() => !openBlocked && setShowPin(true)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 14px', background: openBlocked ? 'var(--input-bg)' : 'var(--btn-bg)', color: openBlocked ? 'var(--text-muted)' : 'var(--btn-color)', border: openBlocked ? '1px solid var(--border)' : 'none', borderRadius: 8, fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 500, cursor: openBlocked ? 'not-allowed' : 'pointer', opacity: openBlocked ? 0.5 : 1 }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                   Отвори с ПИН
                 </button>
@@ -371,7 +519,7 @@ export default function Dashboard() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
-            <div style={{ background: 'var(--card-bg)', border: isLocked ? '2px solid #ef4444' : '1px solid var(--border)', borderRadius: 12, padding: '16px 18px', transition: 'border 0.2s' }}>
+            <div data-tour="door-status" style={{ background: 'var(--card-bg)', border: isLocked ? '2px solid #ef4444' : '1px solid var(--border)', borderRadius: 12, padding: '16px 18px', transition: 'border 0.2s' }}>
               <div style={{ fontSize: 12, color: isLocked ? '#ef4444' : 'var(--text-muted)', marginBottom: 8, fontWeight: isLocked ? 600 : 400 }}>Статус на врата</div>
               <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: -0.5, lineHeight: 1, marginBottom: 6, color: isLocked ? '#ef4444' : door?.status === 'open' ? '#22c55e' : 'var(--text)' }}>
                 {isLocked ? 'Заключена' : door?.status === 'open' ? 'Отворена' : 'Затворена'}

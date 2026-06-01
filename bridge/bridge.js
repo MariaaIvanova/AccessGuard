@@ -162,14 +162,32 @@ function isInMaintenance(door) {
   return s <= e ? (cur >= s && cur <= e) : (cur >= s || cur <= e)
 }
 
+// Транслитерация: кирилица → латиница за OLED показване
+// (Adafruit SSD1306 поддържа само ASCII без специална библиотека)
+const CYR_TO_LAT = {
+  'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ж':'zh','з':'z',
+  'и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p',
+  'р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch',
+  'ш':'sh','щ':'sht','ъ':'a','ь':'y','ю':'yu','я':'ya',
+  'А':'A','Б':'B','В':'V','Г':'G','Д':'D','Е':'E','Ж':'Zh','З':'Z',
+  'И':'I','Й':'Y','К':'K','Л':'L','М':'M','Н':'N','О':'O','П':'P',
+  'Р':'R','С':'S','Т':'T','У':'U','Ф':'F','Х':'H','Ц':'Ts','Ч':'Ch',
+  'Ш':'Sh','Щ':'Sht','Ъ':'A','Ь':'Y','Ю':'Yu','Я':'Ya',
+}
+
+function toLatin(text) {
+  if (!text) return text
+  return String(text).split('').map(ch => CYR_TO_LAT[ch] !== undefined ? CYR_TO_LAT[ch] : ch).join('')
+}
+
 async function handleAccessAttempt(door, p) {
   if (door.is_locked) {
     await logAccess(null, door.id, p.method, 'denied')
-    return reply(door, false, 'Аварийно заключване активно')
+    return reply(door, false, 'Emergency lock active')
   }
   if (isInMaintenance(door)) {
     await logAccess(null, door.id, p.method, 'denied')
-    return reply(door, false, 'Режим на поддръжка')
+    return reply(door, false, 'Maintenance mode')
   }
 
   let user = null
@@ -189,17 +207,19 @@ async function handleAccessAttempt(door, p) {
   if (!user) {
     await logAccess(null, door.id, p.method, 'denied')
     await bumpFailed(door.id)
-    return reply(door, false, 'Непознат потребител')
+    return reply(door, false, 'Unknown user')
   }
   if (user.is_blacklisted || user.status !== 'active') {
     await logAccess(user.id, door.id, p.method, 'denied')
     await bumpFailed(door.id)
-    return reply(door, false, 'Достъпът е отказан')
+    return reply(door, false, 'Access denied')
   }
 
   await logAccess(user.id, door.id, p.method, 'granted')
   await supabase.from('doors').update({ failed_attempts: 0 }).eq('id', door.id)
-  return reply(door, true, `${user.first_name} ${user.last_name}`)
+  // Транслитерираме името от кирилица в латиница за OLED
+  const latinName = toLatin(`${user.first_name} ${user.last_name}`)
+  return reply(door, true, latinName)
 }
 
 async function logAccess(userId, doorId, method, result) {
@@ -244,7 +264,10 @@ function reply(door, granted, message) {
 
 function publishCommand(deviceId, command, payload = {}) {
   const topic = `accessguard/door/${deviceId}/command`
-  const msg = JSON.stringify({ command, ...payload, ts: Date.now() })
+  // Транслитерираме message полето (ако съдържа кирилица) преди да го пратим към ESP32 OLED
+  const safePayload = { ...payload }
+  if (typeof safePayload.message === 'string') safePayload.message = toLatin(safePayload.message)
+  const msg = JSON.stringify({ command, ...safePayload, ts: Date.now() })
   client.publish(topic, msg, { qos: 1 })
   log.info(`-> ${command.padEnd(18)} ${deviceId} :: ${msg}`)
 }

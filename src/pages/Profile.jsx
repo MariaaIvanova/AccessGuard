@@ -365,7 +365,7 @@ export default function Profile() {
               </div>
 
               <div style={profileStyles.settingsGrid}>
-                <div style={profileStyles.settingPanel}>
+                <div data-tour="profile-pin" style={profileStyles.settingPanel}>
                   <div style={profileStyles.sectionTitleCompact}>Смяна на ПИН код</div>
                   <div style={profileStyles.sectionSubtitle}>Директна смяна без одобрение от администратор</div>
                   {pinSuccess && <div style={profileStyles.successNotice}>{pinSuccess}</div>}
@@ -377,7 +377,7 @@ export default function Profile() {
                   </div>
                 </div>
 
-                <div style={profileStyles.settingPanel}>
+                <div data-tour="profile-nfc" style={profileStyles.settingPanel}>
                   <div style={profileStyles.sectionTitleCompact}>NFC карта</div>
                   <div style={profileStyles.sectionSubtitle}>
                     Регистрирайте безконтактна карта или гривна за вход. Сложете я върху четеца, когато ви помоли.
@@ -409,7 +409,7 @@ export default function Profile() {
                   </div>
                 </div>
 
-                <div style={profileStyles.settingPanel}>
+                <div data-tour="profile-fingerprint" style={profileStyles.settingPanel}>
                   <div style={profileStyles.sectionTitleCompact}>Пръстов отпечатък</div>
                   <div style={profileStyles.sectionSubtitle}>
                     Регистрацията изисква 2 поставяния. Следвайте инструкциите на OLED дисплея.

@@ -5,6 +5,7 @@ import { BRAND_LOGO, BRAND_NAME, BRAND_SHORT_NAME } from '../branding'
 import './Layout.css'
 import { ThemeContext } from './ThemeContext'
 import { THEME_ORDER, getInitialTheme, applyTheme, nextThemeLabel as labelOfNext } from './theme'
+import { useOnboarding } from '../context/OnboardingContext'
 
 export default function Layout({ children }) {
   const navigate = useNavigate()
@@ -14,6 +15,7 @@ export default function Layout({ children }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [doorHeartbeat, setDoorHeartbeat] = useState(null)
   const [nowTick, setNowTick] = useState(Date.now())
+  const { resetAndStart: openTour } = useOnboarding()
 
   useEffect(() => {
     if (!document.getElementById('gfont')) {
@@ -61,6 +63,9 @@ export default function Layout({ children }) {
     const id = setInterval(() => setNowTick(Date.now()), 15000)
     return () => clearInterval(id)
   }, [])
+
+  // Auto-trigger се прави в OnboardingProvider (App ниво), не тук —
+  // за да не се ремаунтва при навигация между страниците
 
   useEffect(() => {
     localStorage.setItem('theme', theme)
@@ -119,6 +124,7 @@ export default function Layout({ children }) {
                   <span
                     title={deviceStatus.label}
                     aria-label={deviceStatus.label}
+                    data-tour="device-indicator"
                     style={{
                       width: 8,
                       height: 8,
@@ -135,13 +141,24 @@ export default function Layout({ children }) {
 
             <nav style={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1 }}>
               {navLinks.map(({ path, label }) => (
-                <div key={path} onClick={() => navigate(path)} style={{ padding: '6px 10px', borderRadius: 7, cursor: 'pointer', fontSize: 13, fontWeight: 500, color: isActive(path) ? 'var(--text)' : 'var(--text-muted)', background: isActive(path) ? 'var(--input-bg)' : 'transparent', whiteSpace: 'nowrap' }}>
+                <div
+                  key={path}
+                  onClick={() => navigate(path)}
+                  data-tour={path === '/history' ? 'nav-history' : path === '/admin' ? 'nav-admin' : path === '/schedule' ? 'nav-schedule' : undefined}
+                  style={{ padding: '6px 10px', borderRadius: 7, cursor: 'pointer', fontSize: 13, fontWeight: 500, color: isActive(path) ? 'var(--text)' : 'var(--text-muted)', background: isActive(path) ? 'var(--input-bg)' : 'transparent', whiteSpace: 'nowrap' }}
+                >
                   {label}
                 </div>
               ))}
             </nav>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto', flexShrink: 0 }}>
+
+              <button onClick={openTour} title="Покажи ръководството" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--input-bg)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              </button>
 
               <button onClick={cycleTheme} title={nextThemeLabel} style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--input-bg)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 }}>
                 {theme === 'light' ? (
@@ -153,7 +170,7 @@ export default function Layout({ children }) {
                 )}
               </button>
 
-              <div className="nav-name-text" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 6px', borderRadius: 8 }} onClick={() => navigate('/profile')}>
+              <div className="nav-name-text" data-tour="nav-profile" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 6px', borderRadius: 8 }} onClick={() => navigate('/profile')}>
                 <div style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid var(--border)', background: 'var(--input-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' }}>
                   {profile?.avatar_url
                     ? <img src={profile.avatar_url} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
@@ -226,6 +243,7 @@ export default function Layout({ children }) {
 
         <div style={{ marginTop: 56, flex: 1 }}>{children}</div>
       </div>
+      {/* OnboardingTour сега се рендерира в App.jsx за да оцелява при навигация */}
     </ThemeContext.Provider>
   )
 }

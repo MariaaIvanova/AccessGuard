@@ -130,6 +130,7 @@ export default function Admin() {
   const [testingDevice, setTestingDevice] = useState(false)
   const [testMsg, setTestMsg] = useState('')
   const [recentCommands, setRecentCommands] = useState([])
+  const [analyticsLogs, setAnalyticsLogs] = useState([])
   const navigate = useNavigate()
   const { showConfirm, showAlert } = useDialog()
 
@@ -140,17 +141,23 @@ export default function Admin() {
     setCurrentUser(user)
     const { data: prof } = await supabase.from('users').select('role').eq('id', user.id).single()
     if (prof?.role !== 'admin') { navigate('/dashboard'); return }
-    const [usersResult, requestsResult, auditResult, requestLogsResult, doorResult] = await Promise.all([
+    const thirtyDaysAgo = new Date()
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+    thirtyDaysAgo.setHours(0, 0, 0, 0)
+
+    const [usersResult, requestsResult, auditResult, requestLogsResult, doorResult, analyticsResult] = await Promise.all([
       supabase.from('users').select('*').order('created_at', { ascending: false }),
       supabase.from('requests').select('*, request_user:users!requests_user_id_fkey(first_name, last_name, email)').order('created_at', { ascending: false }),
       supabase.from('audit_logs').select('*, admin:users!audit_logs_admin_id_fkey(first_name, last_name)').order('timestamp', { ascending: false }).limit(100),
       supabase.from('audit_logs').select('*, admin:users!audit_logs_admin_id_fkey(first_name, last_name)').in('action', ['request_approved', 'request_rejected']).order('timestamp', { ascending: false }).limit(300),
       supabase.from('doors').select('*').limit(1).single(),
+      supabase.from('access_logs').select('timestamp, method, result, direction, user_id').gte('timestamp', thirtyDaysAgo.toISOString()).order('timestamp', { ascending: false }).limit(5000),
     ])
     setUsers(usersResult.data || [])
     setRequests(requestsResult.data || [])
     setAuditLogs(auditResult.data || [])
     setRequestLogs(requestLogsResult.data || [])
+    setAnalyticsLogs(analyticsResult.data || [])
     if (doorResult.data) {
       const { data: tempAccessData } = await supabase.from('temp_access').select('*').eq('door_id', doorResult.data.id).order('valid_from', { ascending: false }).limit(15)
       const { data: cmdData } = await supabase.from('device_commands').select('*').eq('door_id', doorResult.data.id).order('created_at', { ascending: false }).limit(10)
@@ -692,6 +699,74 @@ export default function Admin() {
             </>)}
           </div>
         )}
+
+        {tab === 5 && (() => {
+          const total = analyticsLogs.length
+          const granted = analyticsLogs.filter(l => l.result === 'granted').length
+          const denied = analyticsLogs.filter(l => l.result === 'denied').length
+          const successRate = total > 0 ? (granted / total) * 100 : 0
+          const uniqueUsers = new Set(analyticsLogs.filter(l => l.user_id).map(l => l.user_id)).size
+          const today = new Date(); today.setHours(0, 0, 0, 0)
+          const todayLogs = analyticsLogs.filter(l => new Date(l.timestamp) >= today).length
+          const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1)
+          const yesterdayLogs = analyticsLogs.filter(l => {
+            const d = new Date(l.timestamp)
+            return d >= yesterday && d < today
+          }).length
+          const dayTrend = yesterdayLogs === 0
+            ? (todayLogs > 0 ? 100 : 0)
+            : ((todayLogs - yesterdayLogs) / yesterdayLogs) * 100
+
+          // 7-дневен спрямо предишните 7 дни
+          const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+          const fourteenDaysAgo = new Date(today); fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14)
+          const last7 = analyticsLogs.filter(l => new Date(l.timestamp) >= sevenDaysAgo).length
+          const prev7 = analyticsLogs.filter(l => {
+            const d = new Date(l.timestamp)
+            return d >= fourteenDaysAgo && d < sevenDaysAgo
+          }).length
+          const weekTrend = prev7 === 0 ? (last7 > 0 ? 100 : 0) : ((last7 - prev7) / prev7) * 100
+
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text)' }}>Анализ на достъпа</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>Последните 30 дни · {total} записа</div>
+                </div>
+              </div>
+
+              {/* KPI карти */}
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <KpiCard label="Влизания днес" value={todayLogs} sublabel="спрямо вчера" trend={dayTrend} />
+                <KpiCard label="Последни 7 дни" value={last7} sublabel="спрямо предишните 7" trend={weekTrend} />
+                <KpiCard label="Успешност" value={`${successRate.toFixed(0)}%`} sublabel={`${granted} разрешени / ${denied} отказани`} />
+                <KpiCard label="Активни потребители" value={uniqueUsers} sublabel="използвали системата" />
+              </div>
+
+              {/* Bar chart — по часове */}
+              <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
+                <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>Активност по часове</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>Кога през деня се ползва системата най-много</div>
+                <HourlyBarChart logs={analyticsLogs} />
+              </div>
+
+              {/* Line chart — granted vs denied */}
+              <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
+                <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>Разрешени vs Отказани</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>Тенденция за последните 30 дни</div>
+                <GrantedDeniedLineChart logs={analyticsLogs} />
+              </div>
+
+              {/* Pie chart — методи */}
+              <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
+                <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>Методи на достъп</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>Разпределение между ПИН, NFC, отпечатък, QR и дистанционно</div>
+                <MethodPieChart logs={analyticsLogs} />
+              </div>
+            </div>
+          )
+        })()}
       </main>
     </Layout>
   )

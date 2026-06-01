@@ -4,7 +4,7 @@
 
 alter table public.doors
   add column if not exists device_id text unique,
-  add column if not exists last_heartbeat timestamp without time zone,
+  add column if not exists last_heartbeat timestamptz,
   add column if not exists firmware_version text;
 
 comment on column public.doors.device_id is 'Уникален идентификатор на ESP32 устройството (напр. esp32-door-01)';

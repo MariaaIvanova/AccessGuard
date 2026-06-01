@@ -11,13 +11,6 @@ function buildSteps(role) {
       icon: 'wave',
     },
     {
-      target: '[data-tour="device-indicator"]',
-      route: '/dashboard',
-      title: 'Статус на устройството',
-      body: 'Зелената точка означава, че физическият контролер (ESP32) е свързан и работи. Червена точка = устройството е офлайн.',
-      icon: 'signal',
-    },
-    {
       target: '[data-tour="door-status"]',
       route: '/dashboard',
       title: 'Статус на вратата',

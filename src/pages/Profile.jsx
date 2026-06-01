@@ -151,27 +151,45 @@ export default function Profile() {
   }, [loadProfile])
 
   // Realtime: следи дали bridge е записал nfc_uid / fingerprint_ref
+  // Използваме useRef за да избегнем пресъздаване на subscription при всяка промяна на profile
+  const nfcEnrollingRef = useRef(nfcEnrolling)
+  const fpEnrollingRef = useRef(fpEnrolling)
+
+  useEffect(() => {
+    nfcEnrollingRef.current = nfcEnrolling
+  }, [nfcEnrolling])
+
+  useEffect(() => {
+    fpEnrollingRef.current = fpEnrolling
+  }, [fpEnrolling])
+
   useEffect(() => {
     if (!profile?.id) return
+    console.log('[Profile] Starting enrollment Realtime subscription for user', profile.id)
     const channel = supabase.channel(`profile-${profile.id}`)
       .on('postgres_changes', {
         event: 'UPDATE', schema: 'public', table: 'users',
         filter: `id=eq.${profile.id}`,
       }, (msg) => {
+        console.log('[Profile] users UPDATE:', msg)
         const upd = msg.new
         setProfile((p) => ({ ...p, ...upd }))
-        if (nfcEnrolling && upd.nfc_uid && upd.nfc_uid !== profile.nfc_uid) {
+        if (nfcEnrollingRef.current && upd.nfc_uid) {
+          console.log('[Profile] NFC enrollment detected:', upd.nfc_uid)
           setNfcEnrolling(false)
           setNfcMessage(`success:Картата е регистрирана (UID: ${upd.nfc_uid})`)
         }
-        if (fpEnrolling && upd.fingerprint_ref && upd.fingerprint_ref !== profile.fingerprint_ref) {
+        if (fpEnrollingRef.current && upd.fingerprint_ref) {
+          console.log('[Profile] FP enrollment detected:', upd.fingerprint_ref)
           setFpEnrolling(false)
           setFpMessage(`success:Отпечатъкът е регистриран (slot ${upd.fingerprint_ref})`)
         }
       })
-      .subscribe()
+      .subscribe((status) => {
+        console.log('[Profile] Enrollment subscription status:', status)
+      })
     return () => { supabase.removeChannel(channel) }
-  }, [profile?.id, profile?.nfc_uid, profile?.fingerprint_ref, nfcEnrolling, fpEnrolling])
+  }, [profile?.id])
 
   async function saveProfile() {
     setSaving(true); setSuccess(''); setError('')
@@ -225,23 +243,26 @@ export default function Profile() {
   async function enrollNfcCard() {
     if (!door?.id) { setNfcMessage('error:Няма намерена врата.'); return }
     if (!door.device_id) { setNfcMessage('error:Вратата няма свързано устройство.'); return }
-    setNfcEnrolling(true); setNfcMessage('info:Сложете NFC картата на четеца. Имате 15 секунди.')
-    const { error } = await supabase.from('device_commands').insert({
-      door_id: door.id, command: 'enroll_nfc',
-      payload: { user_id: profile.id, timeout_ms: 15000 },
-      issued_by: profile.id, status: 'pending',
-    })
+    setNfcEnrolling(true); setNfcMessage('info:Сложете NFC картата на четеца. Имате 30 секунди.')
+    const { error } = await supabase.from('device_commands')
+      .insert({
+        door_id: door.id, command: 'enroll_nfc',
+        payload: { user_id: profile.id, timeout_ms: 30000 },
+        issued_by: profile.id, status: 'pending',
+      })
     if (error) {
       setNfcEnrolling(false)
       setNfcMessage(`error:Грешка: ${error.message}`)
+      return
     }
+    setNfcMessage('info:Командата е изпратена към устройството. Сложете NFC картата на четеца.')
     // Resolution идва през Realtime subscription горе
     setTimeout(() => {
       setNfcEnrolling((on) => {
         if (on) setNfcMessage('error:Няма получена карта. Опитайте пак.')
         return false
       })
-    }, 17000)
+    }, 32000)
   }
 
   async function removeNfcCard() {
@@ -264,15 +285,18 @@ export default function Profile() {
 
     setFpEnrolling(true)
     setFpMessage(`info:Сложете пръст на сензора. Когато OLED каже „махни", махнете и сложете ПАК. Slot: ${slot}`)
-    const { error } = await supabase.from('device_commands').insert({
-      door_id: door.id, command: 'enroll_fingerprint',
-      payload: { user_id: profile.id, slot, timeout_ms: 30000 },
-      issued_by: profile.id, status: 'pending',
-    })
+    const { error } = await supabase.from('device_commands')
+      .insert({
+        door_id: door.id, command: 'enroll_fingerprint',
+        payload: { user_id: profile.id, slot, timeout_ms: 30000 },
+        issued_by: profile.id, status: 'pending',
+      })
     if (error) {
       setFpEnrolling(false)
       setFpMessage(`error:Грешка: ${error.message}`)
+      return
     }
+    setFpMessage(`info:Командата е изпратена към устройството. Следвайте инструкциите на OLED. Slot: ${slot}`)
     setTimeout(() => {
       setFpEnrolling((on) => {
         if (on) setFpMessage('error:Времето изтече. Опитайте пак.')

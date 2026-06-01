@@ -44,6 +44,8 @@ const log = {
   ok:   (...a) => console.log(`[${ts()}] [OK]`, ...a),
 }
 
+const pendingEnrollments = new Map()
+
 const supabase = createClient(cfg.supabase.url, cfg.supabase.key, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
@@ -90,7 +92,7 @@ client.on('message', async (topic, buf) => {
     .eq('device_id', deviceId)
     .maybeSingle()
 
-  if (!door && kind !== 'heartbeat') {
+  if (!door && kind !== 'heartbeat' && kind !== 'enroll/result') {
     log.warn(`Неизвестно устройство: ${deviceId}`)
     return
   }
@@ -98,21 +100,27 @@ client.on('message', async (topic, buf) => {
   switch (kind) {
     case 'heartbeat':
       if (door) {
-        await supabase.from('doors')
+        const { error: hbErr } = await supabase.from('doors')
           .update({ last_heartbeat: new Date().toISOString() })
           .eq('id', door.id)
+        if (hbErr) log.err(`Heartbeat update error for ${door.name}: ${hbErr.message}`)
       }
       break
 
-    case 'status':
-      await supabase.from('doors').update({
+    case 'status': {
+      if (!door) { log.warn(`status without door for ${deviceId}`); break }
+      const { error: statusErr } = await supabase.from('doors').update({
         status: payload.status,
         is_locked: typeof payload.is_locked === 'boolean' ? payload.is_locked : undefined,
         last_opened_at: payload.status === 'open' ? new Date().toISOString() : undefined,
       }).eq('id', door.id)
+      if (statusErr) log.err(`status update error for ${door.name}: ${statusErr.message}`)
+      else log.info(`status: ${payload.status} -> ${door.name}`)
       break
+    }
 
     case 'access_attempt':
+      if (!door) { log.warn(`access_attempt without door for ${deviceId}`); break }
       await handleAccessAttempt(door, payload)
       break
 
@@ -148,6 +156,39 @@ async function handleEnrollResult(p) {
   }
 }
 
+async function consumePendingEnrollment(door, p) {
+  const enrollment = pendingEnrollments.get(door.id)
+  if (!enrollment) return false
+  if (Date.now() > enrollment.expiresAt) {
+    pendingEnrollments.delete(door.id)
+    return false
+  }
+  if (enrollment.type !== p.method) return false
+
+  const update = enrollment.type === 'nfc'
+    ? { nfc_uid: p.value }
+    : { fingerprint_ref: p.value }
+  const { error } = await supabase.from('users').update(update).eq('id', enrollment.userId)
+  if (error) {
+    log.err(`Enrollment fallback update failed (${enrollment.type}): ${error.message}`)
+    return false
+  }
+
+  pendingEnrollments.delete(door.id)
+  await supabase.from('device_commands').update({
+    status: 'executed',
+    executed_at: new Date().toISOString(),
+    result: { enrolled: enrollment.type, value: p.value },
+  }).eq('id', enrollment.commandId)
+  await publishCommand(door.device_id, 'message', {
+    title: 'DONE',
+    message: enrollment.type === 'nfc' ? 'Card saved' : 'Finger saved',
+    duration_ms: 1500,
+  })
+  log.ok(`Enrollment fallback: ${enrollment.type} ${p.value} -> user ${enrollment.userId}`)
+  return true
+}
+
 function isInMaintenance(door) {
   if (!door?.maintenance_enabled) return false
   const now = new Date()
@@ -181,13 +222,17 @@ function toLatin(text) {
 }
 
 async function handleAccessAttempt(door, p) {
+  if (await consumePendingEnrollment(door, p)) return
+
   if (door.is_locked) {
     await logAccess(null, door.id, p.method, 'denied')
-    return reply(door, false, 'Emergency lock active')
+    await reply(door, false, 'Emergency lock active')
+    return
   }
   if (isInMaintenance(door)) {
     await logAccess(null, door.id, p.method, 'denied')
-    return reply(door, false, 'Maintenance mode')
+    await reply(door, false, 'Maintenance mode')
+    return
   }
 
   let user = null
@@ -207,19 +252,30 @@ async function handleAccessAttempt(door, p) {
   if (!user) {
     await logAccess(null, door.id, p.method, 'denied')
     await bumpFailed(door.id)
-    return reply(door, false, 'Unknown user')
+    await reply(door, false, 'Unknown user')
+    return
   }
   if (user.is_blacklisted || user.status !== 'active') {
     await logAccess(user.id, door.id, p.method, 'denied')
     await bumpFailed(door.id)
-    return reply(door, false, 'Access denied')
+    await reply(door, false, 'Access denied')
+    return
   }
 
   await logAccess(user.id, door.id, p.method, 'granted')
-  await supabase.from('doors').update({ failed_attempts: 0 }).eq('id', door.id)
+  const { error: resetErr } = await supabase.from('doors').update({ failed_attempts: 0 }).eq('id', door.id)
+  if (resetErr) log.err(`Failed to reset failed_attempts for ${door.name}: ${resetErr.message}`)
+
+  // Обновяваме doors.status директно (оптимистично), точно както прави RPC-то
+  const { error: openErr } = await supabase.from('doors')
+    .update({ status: 'open', last_opened_at: new Date().toISOString() })
+    .eq('id', door.id)
+  if (openErr) log.err(`Failed to set door open status for ${door.name}: ${openErr.message}`)
+  else log.info(`status: open -> ${door.name}`)
+
   // Транслитерираме името от кирилица в латиница за OLED
   const latinName = toLatin(`${user.first_name} ${user.last_name}`)
-  return reply(door, true, latinName)
+  await reply(door, true, latinName)
 }
 
 async function logAccess(userId, doorId, method, result) {
@@ -243,7 +299,7 @@ function scheduleAutoClose(door) {
   if (prev) clearTimeout(prev)
   const t = setTimeout(async () => {
     log.warn(`Auto-close: ${door.name} (${minutes}min изтекоха)`)
-    publishCommand(door.device_id, 'relock', {})
+    await publishCommand(door.device_id, 'relock', {})
     await supabase.from('doors').update({ status: 'closed' }).eq('id', door.id)
     await supabase.from('audit_logs').insert({
       action: 'auto_close', details: { door_id: door.id, after_minutes: minutes }
@@ -256,30 +312,26 @@ function scheduleAutoClose(door) {
 
 // Когато ESP32 firmware-ът не публикува status обратно, bridge сам обновява
 // doors.status='open' веднага и schedule-ва 'closed' след duration_ms.
-function markDoorOpenAndScheduleClose(door, durationMs) {
-  supabase.from('doors')
-    .update({ status: 'open', last_opened_at: new Date().toISOString() })
-    .eq('id', door.id)
-    .then(() => log.info(`status: open -> ${door.name}`))
-
+async function markDoorOpenAndScheduleClose(door, durationMs) {
   const prev = statusCloseTimers.get(door.id)
   if (prev) clearTimeout(prev)
   const t = setTimeout(async () => {
-    await supabase.from('doors').update({ status: 'closed' }).eq('id', door.id)
+    const { error } = await supabase.from('doors').update({ status: 'closed' }).eq('id', door.id)
+    if (error) log.err(`Auto-close timer error for ${door.name}: ${error.message}`)
+    else log.info(`status: closed -> ${door.name} (auto след ${durationMs}ms)`)
     statusCloseTimers.delete(door.id)
-    log.info(`status: closed -> ${door.name} (auto след ${durationMs}ms)`)
   }, durationMs)
   statusCloseTimers.set(door.id, t)
 }
 
-function reply(door, granted, message) {
-  publishCommand(door.device_id || 'unknown', granted ? 'unlock' : 'deny', {
+async function reply(door, granted, message) {
+  await publishCommand(door.device_id || 'unknown', granted ? 'unlock' : 'deny', {
     duration_ms: cfg.unlockDurationMs,
     message,
   })
   if (granted) {
     scheduleAutoClose(door)
-    markDoorOpenAndScheduleClose(door, cfg.unlockDurationMs)
+    await markDoorOpenAndScheduleClose(door, cfg.unlockDurationMs)
   }
   log.info(`-> ${granted ? 'GRANT' : 'DENY '} ${door.name}: ${message}`)
 }
@@ -290,8 +342,17 @@ function publishCommand(deviceId, command, payload = {}) {
   const safePayload = { ...payload }
   if (typeof safePayload.message === 'string') safePayload.message = toLatin(safePayload.message)
   const msg = JSON.stringify({ command, ...safePayload, ts: Date.now() })
-  client.publish(topic, msg, { qos: 1 })
-  log.info(`-> ${command.padEnd(18)} ${deviceId} :: ${msg}`)
+  return new Promise((resolve) => {
+    client.publish(topic, msg, { qos: 1 }, (error) => {
+      if (error) {
+        log.err(`MQTT publish failed for ${command} -> ${deviceId}: ${error.message}`)
+        resolve({ ok: false, error })
+        return
+      }
+      log.info(`-> ${command.padEnd(18)} ${deviceId} :: ${msg}`)
+      resolve({ ok: true })
+    })
+  })
 }
 
 async function processCommand(row) {
@@ -305,7 +366,36 @@ async function processCommand(row) {
     return log.warn(`Команда ${row.command} -> няма device_id за врата ${row.door_id}`)
   }
 
-  publishCommand(door.device_id, row.command, row.payload || {})
+  const publishResult = await publishCommand(door.device_id, row.command, row.payload || {})
+  if (!publishResult.ok) {
+    await supabase.from('device_commands').update({
+      status: 'failed',
+      result: { error: publishResult.error?.message || 'mqtt_publish_failed' },
+    }).eq('id', row.id)
+    return
+  }
+
+  if (row.command === 'enroll_nfc' || row.command === 'enroll_fingerprint') {
+    const type = row.command === 'enroll_nfc' ? 'nfc' : 'fingerprint'
+    const timeoutMs = Math.max(10000, Number(row.payload?.timeout_ms || 30000))
+    pendingEnrollments.set(row.door_id, {
+      type,
+      userId: row.payload?.user_id,
+      commandId: row.id,
+      expiresAt: Date.now() + timeoutMs + 5000,
+    })
+    log.info(`Enrollment armed: ${type} for user ${row.payload?.user_id}`)
+  }
+
+  // За аварийно заключване/отключване обновяваме doors директно (fallback ако frontend не го е направил)
+  if (row.command === 'emergency_lock' || row.command === 'emergency_unlock') {
+    const { error: emErr } = await supabase.from('doors').update({
+      is_locked: row.command === 'emergency_lock',
+      status: 'closed',
+    }).eq('id', row.door_id)
+    if (emErr) log.err(`Emergency lock DB update error: ${emErr.message}`)
+    else log.info(`Emergency ${row.command === 'emergency_lock' ? 'lock' : 'unlock'} -> ${door.name}`)
+  }
 
   await supabase.from('device_commands').update({
     status: 'sent', sent_at: new Date().toISOString(),

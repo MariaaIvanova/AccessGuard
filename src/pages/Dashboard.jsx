@@ -68,7 +68,12 @@ export default function Dashboard() {
     const { data: allLogsData } = await supabase.from('access_logs').select('*').eq('user_id', u.id).order('timestamp', { ascending: false }).limit(200)
     setAllLogs(allLogsData || [])
     const today = new Date(); today.setHours(0, 0, 0, 0)
-    const { count } = await supabase.from('access_logs').select('*', { count: 'exact', head: true }).eq('user_id', u.id).gte('timestamp', today.toISOString())
+    const { count } = await supabase.from('access_logs')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', u.id)
+      .eq('direction', 'in')
+      .eq('result', 'granted')
+      .gte('timestamp', today.toISOString())
     setTodayCount(count || 0)
     setLoading(false)
   }, [navigate])
@@ -98,7 +103,9 @@ export default function Dashboard() {
           setLogs((prev) => [data, ...prev].slice(0, 5))
           setAllLogs((prev) => [data, ...prev].slice(0, 200))
           const today = new Date(); today.setHours(0, 0, 0, 0)
-          if (new Date(data.timestamp) >= today) setTodayCount((c) => c + 1)
+          if (data.direction === 'in' && data.result === 'granted' && new Date(data.timestamp) >= today) {
+            setTodayCount((c) => c + 1)
+          }
         }
       })
       .subscribe()
@@ -202,6 +209,8 @@ export default function Dashboard() {
       await showAlert({ title: 'Грешка', message: `Командата не можа да бъде изпратена: ${commandResult.message}`, confirmLabel: 'Разбрах', tone: 'danger' })
       return
     }
+    // Обновяваме doors.is_locked директно за мигновен UI feedback (оптимистично)
+    await supabase.from('doors').update({ is_locked: newLocked, status: 'closed' }).eq('id', door.id)
     await supabase.from('audit_logs').insert({ admin_id: user.id, action: newLocked ? 'emergency_lock' : 'emergency_unlock', details: { door_id: door?.id, timestamp: new Date().toISOString() } })
   }
 

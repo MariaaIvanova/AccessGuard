@@ -253,6 +253,13 @@ export default function Admin() {
     } else {
       setTestMsg(`success:${label} изпратена → ID ${data.id.slice(0,8)}`)
       loadRecentCommands(door.id)
+      // За аварийно заключване/отключване обновяваме doors директно за мигновен UI feedback
+      if (command === 'emergency_lock' || command === 'emergency_unlock') {
+        await supabase.from('doors').update({
+          is_locked: command === 'emergency_lock',
+          status: 'closed',
+        }).eq('id', door.id)
+      }
     }
     setTestingDevice(false)
   }

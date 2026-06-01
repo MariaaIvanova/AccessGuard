@@ -3,19 +3,21 @@
    --------------------------------------------------------------------
    Свързване (промени според платата си):
 
-     LED индикатор   → GPIO 2  (вграденият LED)
+     LED/Signal      → GPIO 14
      Реле модул IN   → GPIO 26 (HIGH = отключено, LOW = заключено)
 
      OLED SSD1306 (I2C, 128x64):
        SDA → GPIO 21
        SCL → GPIO 22
 
-     RC522 NFC (SPI):
-       SDA  (SS)  → GPIO 5
-       SCK        → GPIO 18
-       MOSI       → GPIO 23
-       MISO       → GPIO 19
-       RST        → GPIO 4
+     RC522 NFC (SPI) — pinout from the working RFID prototype:
+       SDA  (SS)  → GPIO 3
+       SCK        → GPIO 4
+       MOSI       → GPIO 2
+       MISO       → GPIO 5
+       RST        → GPIO 1
+
+     Signal output → GPIO 14
 
      AS608 Fingerprint (UART2):
        TX (от ESP към сензор) → GPIO 17
@@ -23,7 +25,7 @@
 
      Keypad 4x4:
        Rows: GPIO 13, 12, 14, 27   (R1, R2, R3, R4)
-       Cols: GPIO 33, 32, 25, 33   (C1, C2, C3, C4)
+       Cols: GPIO 33, 32, 25, 35   (C1, C2, C3, C4)
        (или промени в KEYPAD блока по-долу)
 
    Библиотеки за инсталиране (Tools → Manage Libraries):
@@ -49,10 +51,14 @@
 #include <Adafruit_Fingerprint.h>
 #include "secrets.h"
 
-//Pinout#define LED_PIN     2
+#define LED_PIN     14
 #define RELAY_PIN   26
-#define RC522_SS    5
-#define RC522_RST   4
+#define RC522_SS    3
+#define RC522_RST   1
+#define RC522_SCK   4
+#define RC522_MOSI  2
+#define RC522_MISO  5
+#define SIGNAL_PIN  14
 #define FP_RX       16   // ESP RX  ← FP TX
 #define FP_TX       17   // ESP TX  → FP RX
 
@@ -67,14 +73,16 @@ MFRC522 rfid(RC522_SS, RC522_RST);
 //Keypad 4x4 ─────────────────────────────────────────
 const byte KEYPAD_ROWS = 4;
 const byte KEYPAD_COLS = 4;
+// GPIO35 е input-only. Затова софтуерно обръщаме матрицата:
+// физическите C1-C4 са input rows, а физическите R1-R4 са output columns.
 char keys[KEYPAD_ROWS][KEYPAD_COLS] = {
-  {'1','2','3','A'},
-  {'4','5','6','B'},
-  {'7','8','9','C'},
-  {'*','0','#','D'}
+  {'1','4','7','*'},
+  {'2','5','8','0'},
+  {'3','6','9','#'},
+  {'A','B','C','D'}
 };
-byte rowPins[KEYPAD_ROWS] = {13, 12, 14, 27};
-byte colPins[KEYPAD_COLS] = {33, 32, 25, 35};   // GPIO35 е input-only — ОК за keypad
+byte rowPins[KEYPAD_ROWS] = {33, 32, 25, 35};
+byte colPins[KEYPAD_COLS] = {13, 12, 14, 27};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, KEYPAD_ROWS, KEYPAD_COLS);
 
 //Fingerprint AS608 ──────────────────────────────────
@@ -89,11 +97,12 @@ String topicEnrollProgress, topicEnrollResult;
 WiFiClientSecure netClient;
 PubSubClient     mqtt(netClient);
 
-//Stateunsigned long lastHeartbeat = 0;
+unsigned long lastHeartbeat = 0;
 const unsigned long HEARTBEAT_INTERVAL_MS = 30000;
 unsigned long unlockUntil = 0;     // millis() до кога вратата е отключена
 bool isLocked = false;             // аварийно заключено
 bool isOpen = false;
+bool pendingStatusPublish = false; // флаг за публикуване на статус извън MQTT callback
 
 // PIN буфер
 char pinBuffer[8];
@@ -129,6 +138,7 @@ void scanFingerprintForMatch();
 void runEnrollNFC();
 void runEnrollFingerprint();
 void publishEnrollResult(const char* type, bool success, const String& value, const String& error = "");
+void sendPulses(int count);
 
 void setup() {
   Serial.begin(115200);
@@ -136,6 +146,7 @@ void setup() {
   Serial.println("\n=== AccessGuard ESP32 — FULL firmware ===");
 
   pinMode(LED_PIN, OUTPUT); digitalWrite(LED_PIN, LOW);
+  pinMode(SIGNAL_PIN, OUTPUT); digitalWrite(SIGNAL_PIN, LOW);
   pinMode(RELAY_PIN, OUTPUT); digitalWrite(RELAY_PIN, LOW); // LOW = заключено
 
   // OLED
@@ -148,7 +159,7 @@ void setup() {
   }
 
   // RC522
-  SPI.begin(18, 19, 23, RC522_SS);
+  SPI.begin(RC522_SCK, RC522_MISO, RC522_MOSI, RC522_SS);
   rfid.PCD_Init();
   Serial.println("RC522 ready");
 
@@ -191,6 +202,12 @@ void loop() {
   if (millis() - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {
     publishHeartbeat();
     lastHeartbeat = millis();
+  }
+
+  // Публикуване на pending статус (извън MQTT callback за надеждност)
+  if (pendingStatusPublish) {
+    pendingStatusPublish = false;
+    publishStatus();
   }
 
   // Завършване на временен unlock
@@ -252,7 +269,8 @@ void connectMQTT() {
     String clientId = String(DEVICE_ID) + "-" + String((uint32_t)esp_random(), HEX);
     if (mqtt.connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
       Serial.println("MQTT connected");
-      mqtt.subscribe(topicCommand.c_str(), 1);
+      bool subOk = mqtt.subscribe(topicCommand.c_str(), 1);
+      Serial.printf("MQTT subscribe command: %s -> %s\n", topicCommand.c_str(), subOk ? "OK" : "FAIL");
       publishHeartbeat();
       publishStatus();
     } else {
@@ -264,7 +282,13 @@ void connectMQTT() {
 
 void onMqttMessage(char* topic, byte* payload, unsigned int length) {
   StaticJsonDocument<512> doc;
-  if (deserializeJson(doc, payload, length)) return;
+  Serial.printf("MQTT message on %s: ", topic);
+  for (unsigned int i = 0; i < length; i++) Serial.print((char)payload[i]);
+  Serial.println();
+  if (deserializeJson(doc, payload, length)) {
+    Serial.println("MQTT JSON parse failed");
+    return;
+  }
   handleCommand(doc);
 }
 
@@ -281,6 +305,13 @@ void handleCommand(JsonDocument& doc) {
   else if (!strcmp(cmd, "deny")) {
     String msg = doc["message"] | "Достъп отказан";
     doDeny(msg);
+  }
+  else if (!strcmp(cmd, "message")) {
+    String title = doc["title"] | "INFO";
+    String msg = doc["message"] | "";
+    int dur = doc["duration_ms"] | 1500;
+    sendPulses(2);
+    showMessage(title, msg, dur);
   }
   else if (!strcmp(cmd, "lock")) {  // legacy alias → emergency_lock
     isLocked = true;
@@ -301,20 +332,25 @@ void handleCommand(JsonDocument& doc) {
     int dur = doc["duration_ms"] | 2000;
     digitalWrite(LED_PIN, HIGH);
     unlockUntil = millis() + dur;
+    sendPulses(1);
     showMessage("Тест", "LED свети");
   }
   else if (!strcmp(cmd, "enroll_nfc")) {
     enrollMode = ENROLL_NFC;
     enrollUserId = (const char*)(doc["user_id"] | "");
-    enrollDeadline = millis() + (unsigned long)(doc["timeout_ms"] | 15000);
-    showMessage("Регистрация", "Сложете картата");
+    enrollDeadline = millis() + (unsigned long)(doc["timeout_ms"] | 30000);
+    Serial.printf("ENROLL NFC mode for user=%s\n", enrollUserId.c_str());
+    sendPulses(2);
+    showMessage("ENROLL NFC", "Scan card/fob");
   }
   else if (!strcmp(cmd, "enroll_fingerprint")) {
     enrollMode = ENROLL_FP_1;
     enrollUserId = (const char*)(doc["user_id"] | "");
     enrollSlot   = doc["slot"] | 1;
     enrollDeadline = millis() + (unsigned long)(doc["timeout_ms"] | 30000);
-    showMessage("Регистрация", "Сложете пръст");
+    Serial.printf("ENROLL FP mode for user=%s slot=%d\n", enrollUserId.c_str(), enrollSlot);
+    sendPulses(2);
+    showMessage("ENROLL FP", "Place finger");
   }
   else if (!strcmp(cmd, "reboot")) {
     showMessage("Restart", "...");
@@ -402,7 +438,8 @@ void runEnrollNFC() {
   rfid.PICC_HaltA();
 
   publishEnrollResult("nfc", true, uid);
-  showMessage("Готово", "Картата е записана", 1500);
+  sendPulses(2);
+  showMessage("DONE", "Card saved", 1500);
   enrollMode = ENROLL_NONE;
 }
 
@@ -463,15 +500,13 @@ void doUnlock(int durationMs, const String& msg) {
   digitalWrite(LED_PIN, HIGH);
   unlockUntil = millis() + durationMs;
   isOpen = true;
-  publishStatus();
+  pendingStatusPublish = true;  // ще се публикува в loop(), не директно от callback
+  sendPulses(1);
   showMessage("Здравей,", msg);
 }
 
 void doDeny(const String& msg) {
-  for (int i = 0; i < 3; i++) {
-    digitalWrite(LED_PIN, HIGH); delay(120);
-    digitalWrite(LED_PIN, LOW);  delay(120);
-  }
+  sendPulses(3);
   showMessage("Отказ", msg, 1500);
 }
 
@@ -480,7 +515,7 @@ void doRelock() {
   digitalWrite(LED_PIN, LOW);
   unlockUntil = 0;
   isOpen = false;
-  publishStatus();
+  pendingStatusPublish = true;  // ще се публикува в loop(), не директно от callback
 }
 
 void doLock() {
@@ -501,7 +536,8 @@ void publishHeartbeat() {
   d["rssi"]     = WiFi.RSSI();
   d["fw"]       = "stage6-full";
   char buf[128]; size_t n = serializeJson(d, buf);
-  mqtt.publish(topicHeartbeat.c_str(), buf, n);
+  bool ok = mqtt.publish(topicHeartbeat.c_str(), (const uint8_t*)buf, n);
+  if (!ok) Serial.println("publishHeartbeat failed");
 }
 
 void publishStatus() {
@@ -509,7 +545,11 @@ void publishStatus() {
   d["status"]    = isOpen ? "open" : "closed";
   d["is_locked"] = isLocked;
   char buf[96]; size_t n = serializeJson(d, buf);
-  mqtt.publish(topicStatus.c_str(), buf, n, true);  // retained
+  bool ok = mqtt.publish(topicStatus.c_str(), (const uint8_t*)buf, n, true);  // retained
+  if (!ok) {
+    Serial.println("publishStatus failed, will retry next loop");
+    pendingStatusPublish = true;  // retry in next loop iteration
+  }
 }
 
 void publishAccessAttempt(const char* method, const String& value) {
@@ -517,8 +557,13 @@ void publishAccessAttempt(const char* method, const String& value) {
   d["method"] = method;
   d["value"]  = value;
   char buf[128]; size_t n = serializeJson(d, buf);
-  mqtt.publish(topicAccessAttempt.c_str(), buf, n, false, 1);
-  Serial.printf("▶ access_attempt %s=%s\n", method, value.c_str());
+  bool ok = mqtt.publish(topicAccessAttempt.c_str(), (const uint8_t*)buf, n);
+  if (!ok) {
+    Serial.println("publishAccessAttempt failed, retrying...");
+    delay(100);
+    ok = mqtt.publish(topicAccessAttempt.c_str(), (const uint8_t*)buf, n);
+  }
+  Serial.printf("▶ access_attempt %s=%s sent=%d\n", method, value.c_str(), ok);
 }
 
 void publishEnrollResult(const char* type, bool success, const String& value, const String& error) {
@@ -529,8 +574,21 @@ void publishEnrollResult(const char* type, bool success, const String& value, co
   if (success)         d["value"] = value;
   if (error.length())  d["error"] = error;
   char buf[256]; size_t n = serializeJson(d, buf);
-  mqtt.publish(topicEnrollResult.c_str(), buf, n, false, 1);
-  Serial.printf("▶ enroll/result type=%s success=%d\n", type, success);
+  bool ok = mqtt.publish(topicEnrollResult.c_str(), (const uint8_t*)buf, n);
+  if (!ok) {
+    Serial.println("publishEnrollResult failed, retrying...");
+    delay(100);
+    ok = mqtt.publish(topicEnrollResult.c_str(), (const uint8_t*)buf, n);
+    if (!ok) Serial.println("publishEnrollResult retry also failed");
+  }
+  Serial.printf("▶ enroll/result type=%s success=%d sent=%d\n", type, success, ok);
+}
+
+void sendPulses(int count) {
+  // SIGNAL_PIN is GPIO14 in the existing prototype wiring, and GPIO14 is also
+  // part of the keypad matrix. Do not pulse it here, otherwise PIN reading can
+  // become unstable. Relay/MQTT/OLED still provide the actual access feedback.
+  (void)count;
 }
 
 // OLED

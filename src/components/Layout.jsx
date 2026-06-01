@@ -13,8 +13,6 @@ export default function Layout({ children }) {
   const [profile, setProfile] = useState(null)
   const [theme, setTheme] = useState(getInitialTheme)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [doorHeartbeat, setDoorHeartbeat] = useState(null)
-  const [nowTick, setNowTick] = useState(Date.now())
   const { resetAndStart: openTour } = useOnboarding()
 
   useEffect(() => {
@@ -24,45 +22,14 @@ export default function Layout({ children }) {
       link.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap'
       document.head.appendChild(link)
     }
-    if (!document.getElementById('device-pulse-keyframes')) {
-      const style = document.createElement('style')
-      style.id = 'device-pulse-keyframes'
-      style.textContent = `
-        @keyframes device-pulse {
-          0% { box-shadow: 0 0 0 0 rgba(22,163,74,0.55); }
-          70% { box-shadow: 0 0 0 6px rgba(22,163,74,0); }
-          100% { box-shadow: 0 0 0 0 rgba(22,163,74,0); }
-        }
-      `
-      document.head.appendChild(style)
-    }
     async function load() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { navigate('/login'); return }
       const { data } = await supabase.from('users').select('*').eq('id', user.id).single()
       setProfile(data)
-      const { data: doorData } = await supabase
-        .from('doors').select('last_heartbeat').limit(1).maybeSingle()
-      if (doorData) setDoorHeartbeat(doorData.last_heartbeat)
     }
     load()
   }, [navigate])
-
-  // Realtime: чете heartbeat-а от bridge при ESP32 update
-  useEffect(() => {
-    const channel = supabase.channel('layout-door-heartbeat')
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'doors' }, (payload) => {
-        if (payload.new?.last_heartbeat) setDoorHeartbeat(payload.new.last_heartbeat)
-      })
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
-  }, [])
-
-  // Преизчислява status-а на всеки 15 секунди (в случай че heartbeat-ите спрат)
-  useEffect(() => {
-    const id = setInterval(() => setNowTick(Date.now()), 15000)
-    return () => clearInterval(id)
-  }, [])
 
   // Auto-trigger се прави в OnboardingProvider (App ниво), не тук —
   // за да не се ремаунтва при навигация между страниците
@@ -85,16 +52,6 @@ export default function Layout({ children }) {
   const dark = theme === 'dark'
   const nextThemeLabel = labelOfNext(theme)
   const cycleTheme = () => setTheme((c) => THEME_ORDER[(THEME_ORDER.indexOf(c) + 1) % THEME_ORDER.length])
-
-  const deviceStatus = (() => {
-    if (!doorHeartbeat) return { state: 'unknown', label: 'Устройство: не е свързано', dot: '#94a3b8' }
-    const ageSec = Math.round((nowTick - new Date(doorHeartbeat).getTime()) / 1000)
-    if (ageSec < 90) return { state: 'online', label: `Устройство: онлайн · преди ${ageSec}s`, dot: '#16a34a' }
-    if (ageSec < 600) return { state: 'stale', label: `Устройство: бавно · преди ${Math.round(ageSec / 60)} мин`, dot: '#f59e0b' }
-    const mins = Math.round(ageSec / 60)
-    const hrs = Math.round(mins / 60)
-    return { state: 'offline', label: `Устройство: офлайн · преди ${hrs >= 1 ? hrs + ' ч' : mins + ' мин'}`, dot: '#ef4444' }
-  })()
 
   const navLinks = [
     { path: '/dashboard', label: 'Табло' },
@@ -121,19 +78,6 @@ export default function Layout({ children }) {
               <div className="nav-brand-text">
                 <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', letterSpacing: -0.3, lineHeight: 1.2, display: 'flex', alignItems: 'center', gap: 6 }}>
                   {BRAND_SHORT_NAME}
-                  <span
-                    title={deviceStatus.label}
-                    aria-label={deviceStatus.label}
-                    data-tour="device-indicator"
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: '50%',
-                      background: deviceStatus.dot,
-                      flexShrink: 0,
-                      ...(deviceStatus.state === 'online' ? { animation: 'device-pulse 2s infinite' } : {}),
-                    }}
-                  />
                 </div>
                 <div style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-muted)', letterSpacing: 0.5 }}>{BRAND_NAME.replace(`${BRAND_SHORT_NAME} `, '')}</div>
               </div>

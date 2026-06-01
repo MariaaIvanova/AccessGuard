@@ -24,7 +24,7 @@ const cfg = {
     key: process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY,
   },
   pollMs: Number(process.env.COMMAND_POLL_FALLBACK_MS || 5000),
-  unlockDurationMs: 3000,
+  unlockDurationMs: 30000,
 }
 
 if (!cfg.mqtt.host || !cfg.mqtt.username || !cfg.mqtt.password) {
@@ -234,6 +234,7 @@ async function bumpFailed(doorId) {
 }
 
 const autoCloseTimers = new Map()
+const statusCloseTimers = new Map()
 
 function scheduleAutoClose(door) {
   if (!door.auto_close_enabled) return
@@ -253,12 +254,33 @@ function scheduleAutoClose(door) {
   log.info(`Auto-close armed: ${door.name} след ${minutes} мин.`)
 }
 
+// Когато ESP32 firmware-ът не публикува status обратно, bridge сам обновява
+// doors.status='open' веднага и schedule-ва 'closed' след duration_ms.
+function markDoorOpenAndScheduleClose(door, durationMs) {
+  supabase.from('doors')
+    .update({ status: 'open', last_opened_at: new Date().toISOString() })
+    .eq('id', door.id)
+    .then(() => log.info(`status: open -> ${door.name}`))
+
+  const prev = statusCloseTimers.get(door.id)
+  if (prev) clearTimeout(prev)
+  const t = setTimeout(async () => {
+    await supabase.from('doors').update({ status: 'closed' }).eq('id', door.id)
+    statusCloseTimers.delete(door.id)
+    log.info(`status: closed -> ${door.name} (auto след ${durationMs}ms)`)
+  }, durationMs)
+  statusCloseTimers.set(door.id, t)
+}
+
 function reply(door, granted, message) {
   publishCommand(door.device_id || 'unknown', granted ? 'unlock' : 'deny', {
     duration_ms: cfg.unlockDurationMs,
     message,
   })
-  if (granted) scheduleAutoClose(door)
+  if (granted) {
+    scheduleAutoClose(door)
+    markDoorOpenAndScheduleClose(door, cfg.unlockDurationMs)
+  }
   log.info(`-> ${granted ? 'GRANT' : 'DENY '} ${door.name}: ${message}`)
 }
 

@@ -48,15 +48,27 @@ export default function Login() {
   useEffect(() => {
     let active = true
 
-    async function detectRecoveryMode() {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
+    // Проверка дали URL-ът съдържа recovery параметри (от email link-а)
+    function urlHasRecoveryParams() {
+      const href = window.location.href.toLowerCase()
+      const hash = window.location.hash.toLowerCase()
+      return (
+        href.includes('type=recovery') ||
+        href.includes('mode=recovery') ||
+        hash.includes('type=recovery') ||
+        hash.includes('access_token=') && hash.includes('recovery')
+      )
+    }
 
+    async function detectRecoveryMode() {
       if (!active) return
 
-      if ((window.location.href.includes('type=recovery') || window.location.href.includes('mode=recovery')) && session) {
+      // Ако URL-ът съдържа recovery информация, преминаваме веднага в recovery режим
+      // (не чакаме session, тъй като supabase-js може да я установи асинхронно)
+      if (urlHasRecoveryParams()) {
         setTab('recovery')
+        setLoginError('')
+        setLoginSuccess('')
       }
     }
 
@@ -65,7 +77,8 @@ export default function Login() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'PASSWORD_RECOVERY' || (session && (window.location.href.includes('type=recovery') || window.location.href.includes('mode=recovery')))) {
+      if (!active) return
+      if (event === 'PASSWORD_RECOVERY' || (session && urlHasRecoveryParams())) {
         setTab('recovery')
         setLoginError('')
         setLoginSuccess('')
@@ -120,21 +133,26 @@ export default function Login() {
     setLoginError('')
     setLoginSuccess('')
 
-    const redirectTo = `${window.location.origin}${window.location.pathname}#/login?mode=recovery`
+    // Изграждаме redirect URL базиран на текущия origin
+    // (включваме и pathname за случай че приложението е под subpath)
+    const redirectTo = `${window.location.origin}${window.location.pathname.replace(/\/$/, '')}/#/login?mode=recovery`
+
     const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
 
     if (error) {
-      // Покажи реалното съобщение от Supabase, за да може потребителят да види защо не работи
-      const msg = error.message || 'Неизвестна грешка'
-      if (msg.toLowerCase().includes('rate limit')) {
-        setLoginError('Твърде много опити. Опитайте отново след няколко минути.')
-      } else if (msg.toLowerCase().includes('redirect')) {
-        setLoginError('Грешка с redirect URL. Свържете се с администратор.')
+      const msg = (error.message || '').toLowerCase()
+      if (msg.includes('rate limit') || msg.includes('too many')) {
+        setLoginError('Твърде много опити. Изчакайте 1 час и опитайте пак (Supabase ограничение на free план — максимум 4 имейла на час).')
+      } else if (msg.includes('redirect') || msg.includes('url')) {
+        setLoginError('Redirect URL не е разрешен. Свържете се с администратора (Supabase → Auth → URL Configuration).')
+      } else if (msg.includes('email') && msg.includes('not')) {
+        // Не разкриваме дали имейлът съществува (security)
+        setLoginSuccess('Ако имейлът съществува в системата, ще получите линк за нова парола в рамките на няколко минути.')
       } else {
-        setLoginError(`Не успяхме да изпратим линк: ${msg}`)
+        setLoginError(`Грешка: ${error.message || 'Неизвестна'}. Опитайте пак или се свържете с администратор.`)
       }
     } else {
-      setLoginSuccess('Изпратихме ви линк за нова парола. Проверете входящата си поща (и Spam папката).')
+      setLoginSuccess('Изпратихме линк за нова парола на ' + email + '. Проверете входящата си поща и Spam папката. Линкът е валиден 1 час.')
     }
 
     setForgotLoading(false)
@@ -161,10 +179,18 @@ export default function Login() {
 
     setRecoveryLoading(true)
 
+    // Проверяваме че имаме активна session (от recovery link-а)
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      setRecoveryError('Линкът за възстановяване е изтекъл или невалиден. Поискайте нов от формата за вход.')
+      setRecoveryLoading(false)
+      return
+    }
+
     const { error } = await supabase.auth.updateUser({ password: recoveryPass })
 
     if (error) {
-      setRecoveryError('Паролата не можа да бъде обновена.')
+      setRecoveryError(`Паролата не можа да бъде обновена: ${error.message || 'неизвестна грешка'}`)
       setRecoveryLoading(false)
       return
     }

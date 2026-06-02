@@ -56,8 +56,16 @@ export default function Dashboard() {
     const { data: prof } = await supabase.from('users').select('*').eq('id', u.id).single()
     setProfile(prof)
     if (prof?.role !== 'admin') {
-      const { data: scheduleData } = await supabase.from('schedules').select('*').eq('user_id', u.id).eq('is_active', true).limit(50)
-      setAccessSchedules(scheduleData || [])
+      const scheduleRequests = [
+        supabase.from('schedules').select('*').eq('user_id', u.id).eq('is_active', true).limit(50),
+      ]
+      if (prof?.group_id) {
+        scheduleRequests.push(
+          supabase.from('group_schedules').select('*').eq('group_id', prof.group_id).eq('is_active', true).limit(50)
+        )
+      }
+      const [userSchedulesResult, groupSchedulesResult] = await Promise.all(scheduleRequests)
+      setAccessSchedules([...(userSchedulesResult.data || []), ...(groupSchedulesResult?.data || [])])
     } else {
       setAccessSchedules([])
     }

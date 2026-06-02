@@ -43,7 +43,7 @@ function ScheduleBadge({ state }) {
 }
 
 function getInitialForm() {
-  return { userId: '', days: getDefaultScheduleDays(), openTime: '09:00', closeTime: '18:00' }
+  return { targetType: 'user', userId: '', groupId: '', days: getDefaultScheduleDays(), openTime: '09:00', closeTime: '18:00' }
 }
 
 function toggleDay(days, value) {
@@ -60,7 +60,9 @@ function toDatabaseTime(value) {
 export default function Schedule() {
   const navigate = useNavigate()
   const [users, setUsers] = useState([])
+  const [groups, setGroups] = useState([])
   const [schedules, setSchedules] = useState([])
+  const [groupSchedules, setGroupSchedules] = useState([])
   const [doorId, setDoorId] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -75,18 +77,22 @@ export default function Schedule() {
     if (!user) { navigate('/login'); return }
     const { data: prof } = await supabase.from('users').select('*').eq('id', user.id).single()
     if (!prof || prof.role !== 'admin') { navigate('/dashboard'); return }
-    const [usersResult, schedulesResult, doorResult] = await Promise.all([
+    const [usersResult, groupsResult, schedulesResult, groupSchedulesResult, doorResult] = await Promise.all([
       supabase.from('users').select('*').order('first_name'),
+      supabase.from('access_groups').select('*').order('name'),
       supabase.from('schedules').select('*').limit(200),
+      supabase.from('group_schedules').select('*').limit(200),
       supabase.from('doors').select('*').limit(1),
     ])
-    if (usersResult.error || schedulesResult.error || doorResult.error) { setError('Грешка при зареждане.'); setLoading(false); return }
+    if (usersResult.error || groupsResult.error || schedulesResult.error || groupSchedulesResult.error || doorResult.error) { setError('Грешка при зареждане. Стартирайте sql/08_access_groups.sql в Supabase.'); setLoading(false); return }
     const primaryDoorId = doorResult.data?.[0]?.id || ''
     if (!primaryDoorId) { setError('Няма конфигурирана врата.'); setLoading(false); return }
     const allUsers = usersResult.data || []
-    setUsers(allUsers); setSchedules(schedulesResult.data || []); setDoorId(primaryDoorId)
+    const allGroups = groupsResult.data || []
+    setUsers(allUsers); setGroups(allGroups); setSchedules(schedulesResult.data || []); setGroupSchedules(groupSchedulesResult.data || []); setDoorId(primaryDoorId)
     const firstUser = allUsers.find(u => u.status === 'active' && u.role !== 'admin')?.id || ''
-    setForm(c => ({ ...c, userId: c.userId || firstUser }))
+    const firstGroup = allGroups[0]?.id || ''
+    setForm(c => ({ ...c, userId: c.userId || firstUser, groupId: c.groupId || firstGroup }))
     setLoading(false)
   }, [navigate])
 
@@ -98,22 +104,39 @@ export default function Schedule() {
   async function createSchedule() {
     setError(''); setSuccess('')
     const selectedDays = normalizeScheduleDays(form.days)
-    if (!form.userId || !doorId || selectedDays.length === 0 || !form.openTime || !form.closeTime) { setError('Изберете потребител, поне един ден и часови диапазон.'); return }
+    const isGroupSchedule = form.targetType === 'group'
+    const selectedTargetId = isGroupSchedule ? form.groupId : form.userId
+    if (!selectedTargetId || !doorId || selectedDays.length === 0 || !form.openTime || !form.closeTime) { setError('Изберете потребител или група, поне един ден и часови диапазон.'); return }
     if (form.closeTime <= form.openTime) { setError('Краят трябва да е след началото.'); return }
-    if (schedules.some(s => s.user_id === form.userId && overlapsSchedule(selectedDays, form.openTime, form.closeTime, s))) { setError('Вече има припокриващ се график.'); return }
+    const targetSchedules = isGroupSchedule ? groupSchedules : schedules
+    const targetKey = isGroupSchedule ? 'group_id' : 'user_id'
+    if (targetSchedules.some(s => s[targetKey] === selectedTargetId && overlapsSchedule(selectedDays, form.openTime, form.closeTime, s))) { setError('Вече има припокриващ се график.'); return }
     setSaving(true)
-    const { error: e } = await supabase.from('schedules').insert({ user_id: form.userId, door_id: doorId, days_of_week: selectedDays, open_time: toDatabaseTime(form.openTime), close_time: toDatabaseTime(form.closeTime), is_active: true })
+    const table = isGroupSchedule ? 'group_schedules' : 'schedules'
+    const payload = {
+      [targetKey]: selectedTargetId,
+      door_id: doorId,
+      days_of_week: selectedDays,
+      open_time: toDatabaseTime(form.openTime),
+      close_time: toDatabaseTime(form.closeTime),
+      is_active: true,
+    }
+    const { error: e } = await supabase.from(table).insert(payload)
     if (e) { setError('Не можа да бъде записан.'); setSaving(false); return }
-    setSuccess(`Графикът е записан за ${users.find(u => u.id === form.userId)?.first_name || 'потребителя'}.`)
-    setForm(c => ({ ...getInitialForm(), userId: c.userId }))
+    const targetName = isGroupSchedule
+      ? groups.find(g => g.id === form.groupId)?.name || 'групата'
+      : users.find(u => u.id === form.userId)?.first_name || 'потребителя'
+    setSuccess(`Графикът е записан за ${targetName}.`)
+    setForm(c => ({ ...getInitialForm(), targetType: c.targetType, userId: c.userId, groupId: c.groupId }))
     await loadData(); setSaving(false)
   }
 
-  async function deleteSchedule(scheduleId) {
+  async function deleteSchedule(schedule) {
     const confirmed = await showConfirm({ title: 'Премахни график', message: 'Сигурни ли сте?', confirmLabel: 'Премахни', cancelLabel: 'Отказ', tone: 'danger' })
     if (!confirmed) return
-    setDeletingId(scheduleId); setError(''); setSuccess('')
-    const { error: e } = await supabase.from('schedules').delete().eq('id', scheduleId)
+    setDeletingId(schedule.id); setError(''); setSuccess('')
+    const table = schedule.target_type === 'group' ? 'group_schedules' : 'schedules'
+    const { error: e } = await supabase.from(table).delete().eq('id', schedule.id)
     if (e) { setError('Не можа да бъде премахнат.'); setDeletingId(''); return }
     setSuccess('Графикът беше премахнат.')
     await loadData(); setDeletingId('')
@@ -123,8 +146,12 @@ export default function Schedule() {
 
   const activeUsers = users.filter(u => u.status === 'active' && u.role !== 'admin')
   const usersById = Object.fromEntries(users.map(u => [u.id, u]))
-  const decoratedSchedules = [...schedules]
-    .map(s => ({ ...s, state: getScheduleState(s), user: usersById[s.user_id], currentWindow: getCurrentScheduleWindow(s), nextWindow: getNextScheduleWindow(s) }))
+  const groupsById = Object.fromEntries(groups.map(g => [g.id, g]))
+  const decoratedSchedules = [
+    ...schedules.map(s => ({ ...s, target_type: 'user' })),
+    ...groupSchedules.map(s => ({ ...s, target_type: 'group' })),
+  ]
+    .map(s => ({ ...s, state: getScheduleState(s), user: usersById[s.user_id], group: groupsById[s.group_id], currentWindow: getCurrentScheduleWindow(s), nextWindow: getNextScheduleWindow(s) }))
     .sort((a, b) => {
       const order = { active: 0, upcoming: 1, inactive: 2 }
       const diff = order[a.state] - order[b.state]
@@ -136,7 +163,8 @@ export default function Schedule() {
 
   const activeCount = decoratedSchedules.filter(s => s.state === 'active').length
   const upcomingCount = decoratedSchedules.filter(s => s.state === 'upcoming').length
-  const assignedUsersCount = new Set(decoratedSchedules.map(s => s.user_id)).size
+  const assignedTargetsCount = new Set(decoratedSchedules.map(s => `${s.target_type}:${s.target_type === 'group' ? s.group_id : s.user_id}`)).size
+  const canSaveTarget = form.targetType === 'group' ? groups.length > 0 : activeUsers.length > 0
 
   return (
     <Layout>
@@ -149,7 +177,7 @@ export default function Schedule() {
         <div style={scheduleStyles.statsGrid}>
           <StatCard label="Активни графици" value={activeCount} detail="в момента" />
           <StatCard label="Предстоящи" value={upcomingCount} detail="очакват старт" />
-          <StatCard label="С график" value={assignedUsersCount} detail="потребители" />
+          <StatCard label="С график" value={assignedTargetsCount} detail="потребители/групи" />
           <StatCard label="Активни служители" value={activeUsers.length} detail="налични" />
         </div>
 
@@ -160,16 +188,33 @@ export default function Schedule() {
 
           <section style={scheduleStyles.formCard}>
             <div style={scheduleStyles.cardTitle}>Нов график</div>
-            <div style={scheduleStyles.cardSubtitle}>Задайте за кои дни и часове потребителят може да управлява вратата.</div>
+            <div style={scheduleStyles.cardSubtitle}>Задайте за кои дни и часове потребител или група може да управлява вратата.</div>
             <div style={scheduleStyles.formStack}>
-              <Field label="Потребител">
-                <select style={scheduleStyles.input} value={form.userId} onChange={e => setForm(c => ({ ...c, userId: e.target.value }))} disabled={activeUsers.length === 0}>
-                  {activeUsers.length === 0
-                    ? <option value="">Няма активни потребители</option>
-                    : activeUsers.map(u => <option key={u.id} value={u.id}>{u.first_name} {u.last_name} · {u.email}</option>)
-                  }
+              <Field label="Тип график">
+                <select style={scheduleStyles.input} value={form.targetType} onChange={e => setForm(c => ({ ...c, targetType: e.target.value }))}>
+                  <option value="user">Индивидуален потребител</option>
+                  <option value="group">Група</option>
                 </select>
               </Field>
+              {form.targetType === 'user' ? (
+                <Field label="Потребител">
+                  <select style={scheduleStyles.input} value={form.userId} onChange={e => setForm(c => ({ ...c, userId: e.target.value }))} disabled={activeUsers.length === 0}>
+                    {activeUsers.length === 0
+                      ? <option value="">Няма активни потребители</option>
+                      : activeUsers.map(u => <option key={u.id} value={u.id}>{u.first_name} {u.last_name} · {u.email}</option>)
+                    }
+                  </select>
+                </Field>
+              ) : (
+                <Field label="Група">
+                  <select style={scheduleStyles.input} value={form.groupId} onChange={e => setForm(c => ({ ...c, groupId: e.target.value }))} disabled={groups.length === 0}>
+                    {groups.length === 0
+                      ? <option value="">Няма създадени групи</option>
+                      : groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)
+                    }
+                  </select>
+                </Field>
+              )}
               <Field label="Дни">
                 <div style={scheduleStyles.daysGrid}>
                   {DAY_OPTIONS.map(day => {
@@ -187,13 +232,13 @@ export default function Schedule() {
                 <Field label="Начало"><input type="time" style={scheduleStyles.input} value={form.openTime} onChange={e => setForm(c => ({ ...c, openTime: e.target.value }))} /></Field>
                 <Field label="Край"><input type="time" style={scheduleStyles.input} value={form.closeTime} onChange={e => setForm(c => ({ ...c, closeTime: e.target.value }))} /></Field>
               </div>
-              <button style={getSaveButtonStyle(activeUsers.length === 0)}
-                onClick={createSchedule} disabled={saving || activeUsers.length === 0}>
+              <button style={getSaveButtonStyle(!canSaveTarget)}
+                onClick={createSchedule} disabled={saving || !canSaveTarget}>
                 {saving ? 'Записване...' : 'Запази график'}
               </button>
             </div>
             <div style={scheduleStyles.helperNote}>
-              След запис потребителят ще вижда в таблото, че може да управлява вратата само по този график.
+              Груповият график важи за всички потребители, които администраторът е сложил в тази група.
             </div>
           </section>
 
@@ -210,10 +255,18 @@ export default function Schedule() {
                   <div style={scheduleStyles.scheduleHeader}>
                     <div style={scheduleStyles.scheduleCardText}>
                       <div style={scheduleStyles.scheduleHeadingRow}>
-                        <div style={scheduleStyles.scheduleUserName}>{schedule.user?.first_name} {schedule.user?.last_name}</div>
+                        <div style={scheduleStyles.scheduleUserName}>
+                          {schedule.target_type === 'group'
+                            ? `Група: ${schedule.group?.name || 'Без име'}`
+                            : `${schedule.user?.first_name || ''} ${schedule.user?.last_name || ''}`}
+                        </div>
                         <ScheduleBadge state={schedule.state} />
                       </div>
-                      <div style={scheduleStyles.scheduleEmail}>{schedule.user?.email || 'Няма имейл'}</div>
+                      <div style={scheduleStyles.scheduleEmail}>
+                        {schedule.target_type === 'group'
+                          ? `${users.filter(u => u.group_id === schedule.group_id).length} потребители в групата`
+                          : schedule.user?.email || 'Няма имейл'}
+                      </div>
                       <div style={scheduleStyles.scheduleRule}>{formatScheduleRule(schedule)}</div>
                       {schedule.currentWindow && <div style={scheduleStyles.activeWindow}>Активен прозорец: {formatAccessWindowShort(schedule.currentWindow.start, schedule.currentWindow.end)}</div>}
                       {!schedule.currentWindow && schedule.nextWindow && (
@@ -224,7 +277,7 @@ export default function Schedule() {
                       )}
                       {schedule.state === 'inactive' && <div style={scheduleStyles.inactiveWindow}>Не дава активен достъп в момента.</div>}
                     </div>
-                    <button onClick={() => deleteSchedule(schedule.id)} disabled={deletingId === schedule.id}
+                    <button onClick={() => deleteSchedule(schedule)} disabled={deletingId === schedule.id}
                       style={getDeleteButtonStyle(deletingId === schedule.id)}>
                       {deletingId === schedule.id ? 'Премахване...' : 'Премахни'}
                     </button>

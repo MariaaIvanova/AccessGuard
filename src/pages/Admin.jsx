@@ -53,7 +53,8 @@ const ACTION_LABELS = {
   unblacklist_user: 'Премахнат от черен списък', request_approved: 'Прието запитване',
   request_rejected: 'Отказано запитване', door_settings_updated: 'Настройки на вратата обновени',
   failed_attempts_reset: 'Нулирани неуспешни опити', temp_access_created: 'Генериран временен QR достъп',
-  maintenance_updated: 'Обновен режим на поддръжка',
+  maintenance_updated: 'Обновен режим на поддръжка', group_created: 'Създадена група',
+  group_deleted: 'Изтрита група', user_group_updated: 'Обновена група на потребител',
 }
 
 function getTempAccessAuditKey(doorId, validUntil) {
@@ -100,6 +101,7 @@ function isInMaintenance(enabled, start, end) {
 export default function Admin() {
   const [tab, setTab] = useState(0)
   const [users, setUsers] = useState([])
+  const [groups, setGroups] = useState([])
   const [requests, setRequests] = useState([])
   const [auditLogs, setAuditLogs] = useState([])
   const [requestLogs, setRequestLogs] = useState([])
@@ -131,6 +133,12 @@ export default function Admin() {
   const [testMsg, setTestMsg] = useState('')
   const [recentCommands, setRecentCommands] = useState([])
   const [analyticsLogs, setAnalyticsLogs] = useState([])
+  const [groupName, setGroupName] = useState('')
+  const [groupDescription, setGroupDescription] = useState('')
+  const [groupSaving, setGroupSaving] = useState(false)
+  const [groupMsg, setGroupMsg] = useState('')
+  const [assigningGroupUserId, setAssigningGroupUserId] = useState('')
+  const [deletingGroupId, setDeletingGroupId] = useState('')
   const navigate = useNavigate()
   const { showConfirm, showAlert } = useDialog()
 
@@ -145,8 +153,9 @@ export default function Admin() {
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
     thirtyDaysAgo.setHours(0, 0, 0, 0)
 
-    const [usersResult, requestsResult, auditResult, requestLogsResult, doorResult, analyticsResult] = await Promise.all([
+    const [usersResult, groupsResult, requestsResult, auditResult, requestLogsResult, doorResult, analyticsResult] = await Promise.all([
       supabase.from('users').select('*').order('created_at', { ascending: false }),
+      supabase.from('access_groups').select('*').order('name'),
       supabase.from('requests').select('*, request_user:users!requests_user_id_fkey(first_name, last_name, email)').order('created_at', { ascending: false }),
       supabase.from('audit_logs').select('*, admin:users!audit_logs_admin_id_fkey(first_name, last_name)').order('timestamp', { ascending: false }).limit(100),
       supabase.from('audit_logs').select('*, admin:users!audit_logs_admin_id_fkey(first_name, last_name)').in('action', ['request_approved', 'request_rejected']).order('timestamp', { ascending: false }).limit(300),
@@ -154,6 +163,7 @@ export default function Admin() {
       supabase.from('access_logs').select('timestamp, method, result, direction, user_id').gte('timestamp', thirtyDaysAgo.toISOString()).order('timestamp', { ascending: false }).limit(5000),
     ])
     setUsers(usersResult.data || [])
+    setGroups(groupsResult.data || [])
     setRequests(requestsResult.data || [])
     setAuditLogs(auditResult.data || [])
     setRequestLogs(requestLogsResult.data || [])
@@ -217,6 +227,58 @@ export default function Admin() {
   }
   async function logAction(action, targetId, details = {}) {
     await supabase.from('audit_logs').insert({ admin_id: currentUser.id, action, target_user_id: targetId, details })
+  }
+  async function createGroup() {
+    const name = groupName.trim()
+    const description = groupDescription.trim()
+    if (!name) { setGroupMsg('error:Въведете име на групата.'); return }
+    setGroupSaving(true); setGroupMsg('')
+    const { data, error } = await supabase.from('access_groups').insert({ name, description: description || null }).select().single()
+    if (error || !data) {
+      setGroupMsg(`error:${error?.message || 'Групата не можа да бъде създадена.'}`)
+      setGroupSaving(false)
+      return
+    }
+    await logAction('group_created', null, { group_id: data.id, name })
+    setGroupName(''); setGroupDescription('')
+    setGroupMsg('success:Групата е създадена.')
+    await loadData()
+    setGroupSaving(false)
+  }
+  async function deleteGroup(group) {
+    const members = users.filter(u => u.group_id === group.id).length
+    const ok = await showConfirm({
+      title: 'Изтрий група',
+      message: members > 0
+        ? `Групата има ${members} потребители. Те ще останат без група. Сигурни ли сте?`
+        : 'Сигурни ли сте?',
+      confirmLabel: 'Изтрий',
+      cancelLabel: 'Отказ',
+      tone: 'danger',
+    })
+    if (!ok) return
+    setDeletingGroupId(group.id); setGroupMsg('')
+    const { error } = await supabase.from('access_groups').delete().eq('id', group.id)
+    if (error) {
+      setGroupMsg(`error:${error.message}`)
+      setDeletingGroupId('')
+      return
+    }
+    await logAction('group_deleted', null, { group_id: group.id, name: group.name })
+    await loadData()
+    setDeletingGroupId('')
+  }
+  async function assignUserGroup(userId, groupId) {
+    setAssigningGroupUserId(userId)
+    const normalizedGroupId = groupId || null
+    const { error } = await supabase.from('users').update({ group_id: normalizedGroupId }).eq('id', userId)
+    if (!error) {
+      await logAction('user_group_updated', userId, { group_id: normalizedGroupId })
+      setUsers(current => current.map(u => u.id === userId ? { ...u, group_id: normalizedGroupId } : u))
+    } else {
+      setGroupMsg(`error:${error.message}`)
+    }
+    setAssigningGroupUserId('')
   }
   async function saveDoorSettings() {
     if (!door) return
@@ -317,6 +379,7 @@ export default function Admin() {
     return next
   }, [auditLogs])
   const tempAccessGuestNameMap = useMemo(() => ({ ...auditTempAccessGuestNames, ...tempAccessGuestNames }), [auditTempAccessGuestNames, tempAccessGuestNames])
+  const groupsById = useMemo(() => Object.fromEntries(groups.map(g => [g.id, g])), [groups])
   const inMaintenance = isInMaintenance(maintEnabled, maintStart, maintEnd)
   function getTempAccessGuestName(tc) {
     return tempAccessGuestNameMap[tc.id] || tempAccessGuestNameMap[`qr:${tc.qr_code}`] || tempAccessGuestNameMap[getTempAccessAuditKey(tc.door_id, tc.valid_until)] || tc.guest_name || 'Временен достъп'
@@ -351,11 +414,56 @@ export default function Admin() {
 
         {tab === 0 && (
           <div>
+            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px', marginBottom: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 3 }}>Групи потребители</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>Създайте група, после изберете група за всеки потребител от таблицата.</div>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', alignSelf: 'center' }}>{groups.length} групи</div>
+              </div>
+              {groupMsg && (
+                <div style={{ fontSize: 12, padding: '8px 12px', borderRadius: 8, marginBottom: 12, ...(groupMsg.startsWith('error:') ? { background: '#fef2f2', color: '#ef4444', border: '1px solid #fecaca' } : { background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0' }) }}>
+                  {groupMsg.replace(/^(error|success):/, '')}
+                </div>
+              )}
+              <div className="grid-2col" style={{ alignItems: 'end', marginBottom: 14 }}>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, display: 'block', marginBottom: 6 }}>Име на група</label>
+                  <input style={{ ...inp, width: '100%' }} placeholder="Напр. Служители дневна смяна" value={groupName} onChange={e => setGroupName(e.target.value)} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, display: 'block', marginBottom: 6 }}>Описание</label>
+                  <input style={{ ...inp, width: '100%' }} placeholder="По избор" value={groupDescription} onChange={e => setGroupDescription(e.target.value)} />
+                </div>
+              </div>
+              <button onClick={createGroup} disabled={groupSaving} style={{ padding: '8px 16px', background: 'linear-gradient(135deg, #dd7fa2, #c9638b)', border: 'none', borderRadius: 8, color: '#fff', fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 600, cursor: groupSaving ? 'not-allowed' : 'pointer', opacity: groupSaving ? 0.7 : 1, marginBottom: groups.length > 0 ? 14 : 0 }}>
+                {groupSaving ? 'Създаване...' : 'Създай група'}
+              </button>
+              {groups.length > 0 && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {groups.map(group => {
+                    const count = users.filter(u => u.group_id === group.id).length
+                    return (
+                      <div key={group.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 8, background: 'var(--input-bg)', border: '1px solid var(--border)' }}>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{group.name}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{count} потребители</div>
+                        </div>
+                        <button onClick={() => deleteGroup(group)} disabled={deletingGroupId === group.id} style={{ padding: '4px 8px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#ef4444', fontFamily: "'Inter', sans-serif", fontSize: 11, fontWeight: 500, cursor: deletingGroupId === group.id ? 'not-allowed' : 'pointer', opacity: deletingGroupId === group.id ? 0.6 : 1 }}>
+                          {deletingGroupId === group.id ? '...' : 'Изтрий'}
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
             <input style={{ ...inp, width: '100%', maxWidth: 300, marginBottom: 16 }} placeholder="Търсене по име или имейл..." value={search} onChange={e => setSearch(e.target.value)} />
             <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12 }}>
               <div className="table-scroll">
-                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
-                  <thead><tr style={{ background: 'var(--table-head)' }}>{['Потребител', 'Имейл', 'Роля', 'Статус', 'Действия'].map(h => <th key={h} style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, padding: '10px 16px', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+                  <thead><tr style={{ background: 'var(--table-head)' }}>{['Потребител', 'Имейл', 'Роля', 'Статус', 'Група', 'Действия'].map(h => <th key={h} style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, padding: '10px 16px', textAlign: 'left', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
                   <tbody>
                     {filteredUsers.map((u, i) => (
                       <tr key={u.id} style={{ borderBottom: i < filteredUsers.length - 1 ? '1px solid var(--border)' : 'none', opacity: u.is_blacklisted ? 0.55 : 1 }}>
@@ -373,6 +481,18 @@ export default function Admin() {
                         <td style={{ padding: '12px 16px', fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{u.email}</td>
                         <td style={{ padding: '12px 16px' }}><Badge type={u.role} /></td>
                         <td style={{ padding: '12px 16px' }}><Badge type={u.status} /></td>
+                        <td style={{ padding: '12px 16px', minWidth: 160 }}>
+                          <select
+                            value={u.group_id || ''}
+                            onChange={e => assignUserGroup(u.id, e.target.value)}
+                            disabled={assigningGroupUserId === u.id}
+                            title={u.group_id ? groupsById[u.group_id]?.name || 'Група' : 'Без група'}
+                            style={{ ...inp, width: '100%', minWidth: 150, padding: '6px 8px', fontSize: 12 }}
+                          >
+                            <option value="">Без група</option>
+                            {groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+                          </select>
+                        </td>
                         <td style={{ padding: '12px 16px' }}>
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                             {u.status === 'pending' && <button onClick={() => approveUser(u.id)} style={{ padding: '4px 10px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6, fontFamily: "'Inter', sans-serif", fontSize: 11, fontWeight: 500, cursor: 'pointer', color: '#16a34a', whiteSpace: 'nowrap' }}>Одобри</button>}
@@ -708,15 +828,19 @@ export default function Admin() {
         )}
 
         {tab === 5 && (() => {
-          const total = analyticsLogs.length
-          const granted = analyticsLogs.filter(l => l.result === 'granted').length
-          const denied = analyticsLogs.filter(l => l.result === 'denied').length
+          // „Влизания" = само опити за отваряне на вратата (direction='in').
+          // Изключваме direction='out' (затваряния от Dashboard бутона / AI),
+          // за да не се брои всяко отваряне+затваряне като две влизания.
+          const entryLogs = analyticsLogs.filter(l => l.direction !== 'out')
+          const total = entryLogs.length
+          const granted = entryLogs.filter(l => l.result === 'granted').length
+          const denied = entryLogs.filter(l => l.result === 'denied').length
           const successRate = total > 0 ? (granted / total) * 100 : 0
-          const uniqueUsers = new Set(analyticsLogs.filter(l => l.user_id).map(l => l.user_id)).size
+          const uniqueUsers = new Set(entryLogs.filter(l => l.user_id).map(l => l.user_id)).size
           const today = new Date(); today.setHours(0, 0, 0, 0)
-          const todayLogs = analyticsLogs.filter(l => new Date(l.timestamp) >= today).length
+          const todayLogs = entryLogs.filter(l => new Date(l.timestamp) >= today).length
           const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1)
-          const yesterdayLogs = analyticsLogs.filter(l => {
+          const yesterdayLogs = entryLogs.filter(l => {
             const d = new Date(l.timestamp)
             return d >= yesterday && d < today
           }).length
@@ -724,11 +848,11 @@ export default function Admin() {
             ? (todayLogs > 0 ? 100 : 0)
             : ((todayLogs - yesterdayLogs) / yesterdayLogs) * 100
 
-          // 7-дневен спрямо предишните 7 дни
+          // 7-дневен спрямо предишните 7 дни (само влизания)
           const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
           const fourteenDaysAgo = new Date(today); fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14)
-          const last7 = analyticsLogs.filter(l => new Date(l.timestamp) >= sevenDaysAgo).length
-          const prev7 = analyticsLogs.filter(l => {
+          const last7 = entryLogs.filter(l => new Date(l.timestamp) >= sevenDaysAgo).length
+          const prev7 = entryLogs.filter(l => {
             const d = new Date(l.timestamp)
             return d >= fourteenDaysAgo && d < sevenDaysAgo
           }).length
@@ -751,25 +875,25 @@ export default function Admin() {
                 <KpiCard label="Активни потребители" value={uniqueUsers} sublabel="използвали системата" />
               </div>
 
-              {/* Bar chart — по часове */}
+              {/* Bar chart — по часове (само влизания) */}
               <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
                 <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>Активност по часове</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>Кога през деня се ползва системата най-много</div>
-                <HourlyBarChart logs={analyticsLogs} />
+                <HourlyBarChart logs={entryLogs} />
               </div>
 
-              {/* Line chart — granted vs denied */}
+              {/* Line chart — granted vs denied (само влизания) */}
               <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
                 <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>Разрешени vs Отказани</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>Тенденция за последните 30 дни</div>
-                <GrantedDeniedLineChart logs={analyticsLogs} />
+                <GrantedDeniedLineChart logs={entryLogs} />
               </div>
 
-              {/* Pie chart — методи */}
+              {/* Pie chart — методи (само влизания) */}
               <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
                 <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>Методи на достъп</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>Разпределение между ПИН, NFC, отпечатък, QR и дистанционно</div>
-                <MethodPieChart logs={analyticsLogs} />
+                <MethodPieChart logs={entryLogs} />
               </div>
             </div>
           )
